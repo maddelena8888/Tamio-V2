@@ -536,6 +536,30 @@
                 </div>
             </div>
 
+            <div class="row">
+                <div class="form-group">
+                    <label>Payment Due Day of Month</label>
+                    <select id="expenseDueDay">
+                        <option value="1">1st (Start of month)</option>
+                        <option value="15" selected>15th (Mid-month)</option>
+                        <option value="28">28th (End of month)</option>
+                        <option value="last">Last day of month</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Payment Frequency</label>
+                    <select id="expenseFrequency">
+                        <option value="monthly" selected>Monthly</option>
+                        <option value="bi-weekly">Bi-weekly</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="quarterly">Quarterly</option>
+                    </select>
+                </div>
+            </div>
+            <p style="font-size: 12px; color: #666; margin-top: -10px; margin-bottom: 15px;">
+                💡 When is this expense typically due each month? This helps us accurately forecast cash outflows.
+            </p>
+
             <button class="btn btn-add" onclick="addExpense()">+ Add Expense Bucket</button>
 
             <div class="buttons">
@@ -575,6 +599,130 @@
                 <!-- Week Details -->
                 <h3 style="margin-top: 30px; margin-bottom: 15px;">Week-by-Week Breakdown</h3>
                 <div id="forecastWeeks"></div>
+
+                <!-- Manage Data Section -->
+                <div id="manageDataSection" style="margin-top: 50px; border-top: 2px solid #28a745; padding-top: 30px;">
+                    <h2>📝 Manage Your Data</h2>
+                    <p style="color: #666; margin-bottom: 20px;">Edit, add, or remove clients and expenses. Changes will regenerate your forecast.</p>
+
+                    <!-- Data Tabs -->
+                    <div class="chart-tabs" style="margin-bottom: 20px;">
+                        <button class="chart-tab active" id="clientsTab" onclick="showDataTab('clients')">👥 Clients</button>
+                        <button class="chart-tab" id="expensesTab" onclick="showDataTab('expenses')">💸 Expenses</button>
+                    </div>
+
+                    <!-- Clients Management -->
+                    <div id="manageClientsSection">
+                        <div id="manageClientsList" style="margin-bottom: 20px;"></div>
+
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                            <h4 style="margin-top: 0;">+ Add New Client</h4>
+
+                            <div class="form-group">
+                                <label>Client Name</label>
+                                <input type="text" id="manageClientName" placeholder="e.g., Acme Corp">
+                            </div>
+
+                            <div class="row">
+                                <div class="form-group">
+                                    <label>Client Type</label>
+                                    <select id="manageClientType" onchange="updateManageBillingConfig()">
+                                        <option value="retainer">Retainer</option>
+                                        <option value="project">Project</option>
+                                        <option value="usage">Usage-Based</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Currency</label>
+                                    <select id="manageClientCurrency">
+                                        <option value="USD">USD</option>
+                                        <option value="EUR">EUR</option>
+                                        <option value="GBP">GBP</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div id="manageBillingConfigSection"></div>
+
+                            <button class="btn btn-add" onclick="addManagedClient()">+ Add Client</button>
+                        </div>
+                    </div>
+
+                    <!-- Expenses Management -->
+                    <div id="manageExpensesSection" style="display: none;">
+                        <div id="manageExpensesList" style="margin-bottom: 20px;"></div>
+
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                            <h4 style="margin-top: 0;">+ Add New Expense</h4>
+
+                            <div class="form-group">
+                                <label>Expense Name</label>
+                                <input type="text" id="manageExpenseName" placeholder="e.g., Office Rent">
+                            </div>
+
+                            <div class="row">
+                                <div class="form-group">
+                                    <label>Category</label>
+                                    <select id="manageExpenseCategory">
+                                        <option value="payroll">Payroll</option>
+                                        <option value="rent">Rent</option>
+                                        <option value="contractors">Contractors</option>
+                                        <option value="software">Software</option>
+                                        <option value="marketing">Marketing</option>
+                                        <option value="other">Other</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Type</label>
+                                    <select id="manageExpenseType">
+                                        <option value="fixed">Fixed</option>
+                                        <option value="variable">Variable</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="form-group">
+                                    <label>Monthly Amount</label>
+                                    <input type="number" id="manageExpenseAmount" placeholder="5000" step="0.01">
+                                </div>
+                                <div class="form-group">
+                                    <label>Priority</label>
+                                    <select id="manageExpensePriority">
+                                        <option value="essential">Essential</option>
+                                        <option value="important" selected>Important</option>
+                                        <option value="discretionary">Discretionary</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="form-group">
+                                    <label>Payment Due Day</label>
+                                    <select id="manageExpenseDueDay">
+                                        <option value="1">1st</option>
+                                        <option value="15" selected>15th</option>
+                                        <option value="28">28th</option>
+                                        <option value="last">Last day</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Frequency</label>
+                                    <select id="manageExpenseFrequency">
+                                        <option value="monthly" selected>Monthly</option>
+                                        <option value="bi-weekly">Bi-weekly</option>
+                                        <option value="weekly">Weekly</option>
+                                        <option value="quarterly">Quarterly</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <button class="btn btn-add" onclick="addManagedExpense()">+ Add Expense</button>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary" onclick="regenerateForecast()" style="margin-top: 10px;">🔄 Regenerate Forecast with Changes</button>
+                </div>
 
                 <!-- Scenario Analysis Section -->
                 <div id="scenarioSection" style="margin-top: 50px; border-top: 2px solid #667eea; padding-top: 30px;">
@@ -762,14 +910,34 @@
                             <input type="number" id="billingAmount" placeholder="10000" step="0.01">
                         </div>
                     </div>
+                    <div class="row">
+                        <div class="form-group">
+                            <label>Average Invoice Day of Month</label>
+                            <select id="invoiceDay">
+                                <option value="1">1st (Start of month)</option>
+                                <option value="15">15th (Mid-month)</option>
+                                <option value="28">28th (End of month)</option>
+                                <option value="custom">Custom day...</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="customInvoiceDayGroup" style="display: none;">
+                            <label>Custom Day (1-28)</label>
+                            <input type="number" id="customInvoiceDay" min="1" max="28" placeholder="1">
+                        </div>
+                    </div>
                     <div class="form-group">
                         <label>Payment Terms</label>
                         <select id="paymentTerms">
-                            <option value="net_7">Net 7</option>
-                            <option value="net_14">Net 14</option>
-                            <option value="net_30">Net 30</option>
+                            <option value="net_7">Net 7 (Payment due 7 days after invoice)</option>
+                            <option value="net_14">Net 14 (Payment due 14 days after invoice)</option>
+                            <option value="net_30" selected>Net 30 (Payment due 30 days after invoice)</option>
+                            <option value="net_45">Net 45 (Payment due 45 days after invoice)</option>
+                            <option value="net_60">Net 60 (Payment due 60 days after invoice)</option>
                         </select>
                     </div>
+                    <p style="font-size: 12px; color: #666; margin-top: 5px;">
+                        💡 Payment expected: Invoice day + payment terms (e.g., invoiced on 1st with Net 30 = payment ~31st)
+                    </p>
                 `;
             } else if (type === 'project') {
                 html = `
@@ -804,6 +972,19 @@
             }
 
             section.innerHTML = html;
+
+            // Add event listener for custom invoice day toggle
+            if (type === 'retainer') {
+                const invoiceDaySelect = document.getElementById('invoiceDay');
+                if (invoiceDaySelect) {
+                    invoiceDaySelect.addEventListener('change', function() {
+                        const customGroup = document.getElementById('customInvoiceDayGroup');
+                        if (customGroup) {
+                            customGroup.style.display = this.value === 'custom' ? 'block' : 'none';
+                        }
+                    });
+                }
+            }
         }
 
         function addClient() {
@@ -824,9 +1005,18 @@
                     alert('Please enter billing amount');
                     return;
                 }
+
+                // Get invoice day
+                let invoiceDay = document.getElementById('invoiceDay').value;
+                if (invoiceDay === 'custom') {
+                    invoiceDay = parseInt(document.getElementById('customInvoiceDay').value) || 1;
+                } else {
+                    invoiceDay = parseInt(invoiceDay);
+                }
+
                 billingConfig = {
                     frequency: document.getElementById('billingFrequency').value,
-                    billing_day: "start_of_month",
+                    invoice_day: invoiceDay,
                     amount: amount,
                     payment_terms: document.getElementById('paymentTerms').value
                 };
@@ -889,15 +1079,33 @@
         function renderClients() {
             const list = document.getElementById('clientsList');
 
-            list.innerHTML = clients.map((client, i) => `
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">${client.name}</span>
-                        <button class="btn btn-remove" onclick="removeClient(${i})">Remove</button>
+            list.innerHTML = clients.map((client, i) => {
+                let details = `Type: ${client.client_type} • ${client.currency}`;
+
+                // Add billing info based on type
+                if (client.client_type === 'retainer' && client.billing_config) {
+                    const invoiceDay = client.billing_config.invoice_day || 1;
+                    const terms = client.billing_config.payment_terms || 'net_30';
+                    const termsNum = parseInt(terms.replace('net_', ''));
+                    const expectedDay = Math.min(invoiceDay + termsNum, 28);
+                    details += `<br>$${client.billing_config.amount?.toLocaleString() || 0}/${client.billing_config.frequency}`;
+                    details += `<br><small style="color: #666;">Invoice: Day ${invoiceDay} → Payment expected: ~Day ${expectedDay} (${terms.replace('_', ' ')})</small>`;
+                } else if (client.client_type === 'project' && client.billing_config) {
+                    details += `<br>Project value: $${client.billing_config.total_value?.toLocaleString() || 0}`;
+                } else if (client.client_type === 'usage' && client.billing_config) {
+                    details += `<br>~$${client.billing_config.typical_amount?.toLocaleString() || 0}/${client.billing_config.settlement_frequency}`;
+                }
+
+                return `
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">${client.name}</span>
+                            <button class="btn btn-remove" onclick="removeClient(${i})">Remove</button>
+                        </div>
+                        <div>${details}</div>
                     </div>
-                    <div>Type: ${client.client_type} • ${client.currency}</div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         // Page 3: Expenses
@@ -907,6 +1115,8 @@
             const type = document.getElementById('expenseType').value;
             const amount = parseFloat(document.getElementById('expenseAmount').value);
             const priority = document.getElementById('expensePriority').value;
+            const dueDay = document.getElementById('expenseDueDay').value;
+            const frequency = document.getElementById('expenseFrequency').value;
 
             if (!name || !amount) {
                 alert('Please fill in expense details');
@@ -920,7 +1130,9 @@
                 monthly_amount: amount,
                 currency: 'USD',
                 priority: priority,
-                is_stable: true
+                is_stable: true,
+                due_day: dueDay,
+                frequency: frequency
             });
 
             renderExpenses();
@@ -938,15 +1150,22 @@
         function renderExpenses() {
             const list = document.getElementById('expensesList');
 
-            list.innerHTML = expenses.map((expense, i) => `
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">${expense.name}</span>
-                        <button class="btn btn-remove" onclick="removeExpense(${i})">Remove</button>
+            list.innerHTML = expenses.map((expense, i) => {
+                const dueDay = expense.due_day || '15';
+                const dueDayLabel = dueDay === 'last' ? 'Last day' : `Day ${dueDay}`;
+                const freq = expense.frequency || 'monthly';
+
+                return `
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">${expense.name}</span>
+                            <button class="btn btn-remove" onclick="removeExpense(${i})">Remove</button>
+                        </div>
+                        <div>${expense.category} • $${expense.monthly_amount.toLocaleString()}/${freq} • Priority: ${expense.priority}</div>
+                        <div><small style="color: #666;">Due: ${dueDayLabel} of month</small></div>
                     </div>
-                    <div>${expense.category} • $${expense.monthly_amount.toLocaleString()}/month • Priority: ${expense.priority}</div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         // Submit Onboarding
@@ -1008,6 +1227,7 @@
         let forecastData = null;
         let currentChart = null;
         let currentChartType = 'balance';
+        let currentUserId = null;
 
         function displayForecast(forecast) {
             document.getElementById('loadingSection').classList.add('hidden');
@@ -1076,6 +1296,12 @@
             }).join('');
 
             document.getElementById('forecastWeeks').innerHTML = weeksHtml;
+
+            // Load managed data for the manage section
+            loadManagedData();
+
+            // Initialize the manage client billing config
+            updateManageBillingConfig();
         }
 
         function toggleWeekDetails(weekIndex) {
@@ -1223,10 +1449,414 @@
         }
 
         // ============================================================================
+        // MANAGE DATA FUNCTIONS
+        // ============================================================================
+
+        let managedClients = [];
+        let managedExpenses = [];
+
+        function showDataTab(tab) {
+            document.getElementById('clientsTab').classList.remove('active');
+            document.getElementById('expensesTab').classList.remove('active');
+            document.getElementById('manageClientsSection').style.display = 'none';
+            document.getElementById('manageExpensesSection').style.display = 'none';
+
+            if (tab === 'clients') {
+                document.getElementById('clientsTab').classList.add('active');
+                document.getElementById('manageClientsSection').style.display = 'block';
+            } else {
+                document.getElementById('expensesTab').classList.add('active');
+                document.getElementById('manageExpensesSection').style.display = 'block';
+            }
+        }
+
+        async function loadManagedData() {
+            if (!currentUserId) return;
+
+            try {
+                // Load clients
+                const clientsRes = await fetch(`${API_BASE}/data/clients?user_id=${currentUserId}`);
+                if (clientsRes.ok) {
+                    managedClients = await clientsRes.json();
+                    renderManagedClients();
+                }
+
+                // Load expenses
+                const expensesRes = await fetch(`${API_BASE}/data/expenses?user_id=${currentUserId}`);
+                if (expensesRes.ok) {
+                    managedExpenses = await expensesRes.json();
+                    renderManagedExpenses();
+                }
+            } catch (error) {
+                console.error('Error loading managed data:', error);
+            }
+        }
+
+        function renderManagedClients() {
+            const list = document.getElementById('manageClientsList');
+
+            if (managedClients.length === 0) {
+                list.innerHTML = '<p style="color: #666; text-align: center;">No clients yet. Add your first client below.</p>';
+                return;
+            }
+
+            list.innerHTML = managedClients.map((client, i) => {
+                let details = `Type: ${client.client_type} • ${client.currency}`;
+
+                if (client.client_type === 'retainer' && client.billing_config) {
+                    const invoiceDay = client.billing_config.invoice_day || 1;
+                    const terms = client.billing_config.payment_terms || 'net_30';
+                    const termsNum = parseInt(terms.replace('net_', ''));
+                    const expectedDay = Math.min(invoiceDay + termsNum, 28);
+                    details += `<br>$${client.billing_config.amount?.toLocaleString() || 0}/${client.billing_config.frequency}`;
+                    details += `<br><small style="color: #666;">Invoice: Day ${invoiceDay} → Payment: ~Day ${expectedDay}</small>`;
+                }
+
+                return `
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">${client.name}</span>
+                            <div>
+                                <button class="btn btn-secondary" onclick="editManagedClient('${client.id}')" style="margin-right: 5px; padding: 5px 10px; font-size: 12px;">Edit</button>
+                                <button class="btn btn-remove" onclick="deleteManagedClient('${client.id}')">Delete</button>
+                            </div>
+                        </div>
+                        <div>${details}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderManagedExpenses() {
+            const list = document.getElementById('manageExpensesList');
+
+            if (managedExpenses.length === 0) {
+                list.innerHTML = '<p style="color: #666; text-align: center;">No expenses yet. Add your first expense below.</p>';
+                return;
+            }
+
+            list.innerHTML = managedExpenses.map((expense, i) => {
+                const dueDay = expense.due_day || '15';
+                const dueDayLabel = dueDay === 'last' ? 'Last day' : `Day ${dueDay}`;
+                const freq = expense.frequency || 'monthly';
+
+                return `
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">${expense.name}</span>
+                            <div>
+                                <button class="btn btn-secondary" onclick="editManagedExpense('${expense.id}')" style="margin-right: 5px; padding: 5px 10px; font-size: 12px;">Edit</button>
+                                <button class="btn btn-remove" onclick="deleteManagedExpense('${expense.id}')">Delete</button>
+                            </div>
+                        </div>
+                        <div>${expense.category} • $${expense.monthly_amount?.toLocaleString() || 0}/${freq} • Priority: ${expense.priority}</div>
+                        <div><small style="color: #666;">Due: ${dueDayLabel} of month</small></div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateManageBillingConfig() {
+            const type = document.getElementById('manageClientType').value;
+            const section = document.getElementById('manageBillingConfigSection');
+
+            let html = '';
+
+            if (type === 'retainer') {
+                html = `
+                    <div class="row">
+                        <div class="form-group">
+                            <label>Billing Frequency</label>
+                            <select id="manageBillingFrequency">
+                                <option value="monthly">Monthly</option>
+                                <option value="quarterly">Quarterly</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Amount</label>
+                            <input type="number" id="manageBillingAmount" placeholder="10000" step="0.01">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="form-group">
+                            <label>Invoice Day of Month</label>
+                            <select id="manageInvoiceDay">
+                                <option value="1">1st</option>
+                                <option value="15">15th</option>
+                                <option value="28">28th</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Payment Terms</label>
+                            <select id="managePaymentTerms">
+                                <option value="net_7">Net 7</option>
+                                <option value="net_14">Net 14</option>
+                                <option value="net_30" selected>Net 30</option>
+                                <option value="net_45">Net 45</option>
+                                <option value="net_60">Net 60</option>
+                            </select>
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'project') {
+                html = `
+                    <div class="row">
+                        <div class="form-group">
+                            <label>Total Project Value</label>
+                            <input type="number" id="manageProjectValue" placeholder="50000" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>Deposit Amount</label>
+                            <input type="number" id="manageDepositAmount" placeholder="15000" step="0.01">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Expected Deposit Date</label>
+                        <input type="date" id="manageDepositDate">
+                    </div>
+                `;
+            } else if (type === 'usage') {
+                html = `
+                    <div class="row">
+                        <div class="form-group">
+                            <label>Settlement Frequency</label>
+                            <select id="manageSettlementFrequency">
+                                <option value="weekly">Weekly</option>
+                                <option value="monthly">Monthly</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Typical Amount</label>
+                            <input type="number" id="manageTypicalAmount" placeholder="5000" step="0.01">
+                        </div>
+                    </div>
+                `;
+            }
+
+            section.innerHTML = html;
+        }
+
+        async function addManagedClient() {
+            const name = document.getElementById('manageClientName').value;
+            const type = document.getElementById('manageClientType').value;
+            const currency = document.getElementById('manageClientCurrency').value;
+
+            if (!name) {
+                alert('Please enter client name');
+                return;
+            }
+
+            let billingConfig = {};
+
+            if (type === 'retainer') {
+                const amount = parseFloat(document.getElementById('manageBillingAmount').value);
+                if (!amount) {
+                    alert('Please enter billing amount');
+                    return;
+                }
+                billingConfig = {
+                    frequency: document.getElementById('manageBillingFrequency').value,
+                    invoice_day: parseInt(document.getElementById('manageInvoiceDay').value),
+                    amount: amount,
+                    payment_terms: document.getElementById('managePaymentTerms').value
+                };
+            } else if (type === 'project') {
+                const totalValue = parseFloat(document.getElementById('manageProjectValue').value);
+                const depositAmount = parseFloat(document.getElementById('manageDepositAmount').value);
+                const depositDate = document.getElementById('manageDepositDate').value;
+
+                if (!totalValue || !depositAmount || !depositDate) {
+                    alert('Please fill in project details');
+                    return;
+                }
+
+                billingConfig = {
+                    total_value: totalValue,
+                    payment_structure: "milestone",
+                    milestones: [{
+                        name: "Deposit",
+                        amount: depositAmount,
+                        expected_date: depositDate,
+                        trigger_type: "date",
+                        payment_terms: "net_7"
+                    }]
+                };
+            } else if (type === 'usage') {
+                const amount = parseFloat(document.getElementById('manageTypicalAmount').value);
+                if (!amount) {
+                    alert('Please enter typical amount');
+                    return;
+                }
+                billingConfig = {
+                    settlement_frequency: document.getElementById('manageSettlementFrequency').value,
+                    typical_amount: amount,
+                    payment_terms: "net_30"
+                };
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/data/clients`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        user_id: currentUserId,
+                        name: name,
+                        client_type: type,
+                        currency: currency,
+                        status: "active",
+                        payment_behavior: "on_time",
+                        churn_risk: "low",
+                        scope_risk: "low",
+                        billing_config: billingConfig
+                    })
+                });
+
+                if (response.ok) {
+                    document.getElementById('manageClientName').value = '';
+                    await loadManagedData();
+                    alert('Client added successfully!');
+                } else {
+                    alert('Error adding client');
+                }
+            } catch (error) {
+                console.error('Error adding client:', error);
+                alert('Error adding client');
+            }
+        }
+
+        async function deleteManagedClient(clientId) {
+            if (!confirm('Are you sure you want to delete this client? This will also remove their future cash events.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/data/clients/${clientId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    await loadManagedData();
+                    alert('Client deleted successfully!');
+                } else {
+                    alert('Error deleting client');
+                }
+            } catch (error) {
+                console.error('Error deleting client:', error);
+                alert('Error deleting client');
+            }
+        }
+
+        function editManagedClient(clientId) {
+            alert('Edit functionality coming soon! For now, delete and re-add the client.');
+        }
+
+        async function addManagedExpense() {
+            const name = document.getElementById('manageExpenseName').value;
+            const category = document.getElementById('manageExpenseCategory').value;
+            const type = document.getElementById('manageExpenseType').value;
+            const amount = parseFloat(document.getElementById('manageExpenseAmount').value);
+            const priority = document.getElementById('manageExpensePriority').value;
+            const dueDay = document.getElementById('manageExpenseDueDay').value;
+            const frequency = document.getElementById('manageExpenseFrequency').value;
+
+            if (!name || !amount) {
+                alert('Please fill in expense details');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/data/expenses`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        user_id: currentUserId,
+                        name: name,
+                        category: category,
+                        bucket_type: type,
+                        monthly_amount: amount,
+                        currency: 'USD',
+                        priority: priority,
+                        is_stable: true,
+                        due_day: dueDay,
+                        frequency: frequency
+                    })
+                });
+
+                if (response.ok) {
+                    document.getElementById('manageExpenseName').value = '';
+                    document.getElementById('manageExpenseAmount').value = '';
+                    await loadManagedData();
+                    alert('Expense added successfully!');
+                } else {
+                    alert('Error adding expense');
+                }
+            } catch (error) {
+                console.error('Error adding expense:', error);
+                alert('Error adding expense');
+            }
+        }
+
+        async function deleteManagedExpense(expenseId) {
+            if (!confirm('Are you sure you want to delete this expense? This will also remove its future cash events.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/data/expenses/${expenseId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    await loadManagedData();
+                    alert('Expense deleted successfully!');
+                } else {
+                    alert('Error deleting expense');
+                }
+            } catch (error) {
+                console.error('Error deleting expense:', error);
+                alert('Error deleting expense');
+            }
+        }
+
+        function editManagedExpense(expenseId) {
+            alert('Edit functionality coming soon! For now, delete and re-add the expense.');
+        }
+
+        async function regenerateForecast() {
+            if (!currentUserId) {
+                alert('No user ID available');
+                return;
+            }
+
+            try {
+                // Show loading
+                document.getElementById('forecastSummary').innerHTML = '<p>Regenerating forecast...</p>';
+
+                // Regenerate events for all clients and expenses
+                const regenResponse = await fetch(`${API_BASE}/data/regenerate-events?user_id=${currentUserId}`, {
+                    method: 'POST'
+                });
+
+                // Get new forecast
+                const forecastResponse = await fetch(`${API_BASE}/forecast?user_id=${currentUserId}`);
+
+                if (forecastResponse.ok) {
+                    const forecast = await forecastResponse.json();
+                    displayForecast(forecast);
+                    alert('Forecast regenerated successfully!');
+                } else {
+                    alert('Error regenerating forecast');
+                }
+            } catch (error) {
+                console.error('Error regenerating forecast:', error);
+                alert('Error regenerating forecast');
+            }
+        }
+
+        // ============================================================================
         // SCENARIO ANALYSIS FUNCTIONS
         // ============================================================================
 
-        let currentUserId = null;
         let scenarios = [];
 
         function showScenarioBuilder() {
