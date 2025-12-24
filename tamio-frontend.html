@@ -386,6 +386,221 @@
         .btn-export:hover {
             background: #45a049;
         }
+
+        /* ============================================================
+           TAMI CHAT PANEL STYLES
+           ============================================================ */
+        .tami-panel {
+            margin-top: 30px;
+            border: 2px solid #667eea;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #f8f9ff;
+        }
+
+        .tami-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .tami-header h3 {
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .tami-status {
+            font-size: 12px;
+            background: rgba(255,255,255,0.2);
+            padding: 4px 10px;
+            border-radius: 12px;
+        }
+
+        .tami-messages {
+            height: 350px;
+            overflow-y: auto;
+            padding: 20px;
+            background: white;
+        }
+
+        .tami-message {
+            margin-bottom: 15px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .tami-message.user {
+            flex-direction: row-reverse;
+        }
+
+        .tami-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .tami-avatar.tami {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .tami-avatar.user {
+            background: #e0e0e0;
+        }
+
+        .tami-bubble {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .tami-message.tami .tami-bubble {
+            background: #f0f4ff;
+            border: 1px solid #e0e8ff;
+            border-bottom-left-radius: 4px;
+        }
+
+        .tami-message.user .tami-bubble {
+            background: #667eea;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .tami-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .tami-action-btn {
+            padding: 8px 16px;
+            background: white;
+            border: 1px solid #667eea;
+            color: #667eea;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .tami-action-btn:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .tami-input-area {
+            padding: 15px 20px;
+            background: #f8f9fa;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .tami-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #e0e0e0;
+            border-radius: 24px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .tami-input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .tami-send-btn {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 24px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .tami-send-btn:hover {
+            background: #5568d3;
+        }
+
+        .tami-send-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .scenario-banner {
+            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 14px;
+        }
+
+        .scenario-banner.hidden {
+            display: none;
+        }
+
+        .scenario-banner-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .scenario-banner-btn {
+            padding: 6px 14px;
+            border-radius: 16px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+        }
+
+        .scenario-banner-btn.apply {
+            background: white;
+            color: #f57c00;
+        }
+
+        .scenario-banner-btn.discard {
+            background: rgba(255,255,255,0.2);
+            color: white;
+        }
+
+        .tami-typing {
+            display: flex;
+            gap: 4px;
+            padding: 8px 16px;
+        }
+
+        .tami-typing-dot {
+            width: 8px;
+            height: 8px;
+            background: #667eea;
+            border-radius: 50%;
+            animation: typing 1.4s infinite;
+        }
+
+        .tami-typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .tami-typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+            30% { transform: translateY(-4px); opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -543,7 +758,7 @@
                         <option value="1">1st (Start of month)</option>
                         <option value="15" selected>15th (Mid-month)</option>
                         <option value="28">28th (End of month)</option>
-                        <option value="last">Last day of month</option>
+                        <option value="31">Last day of month</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -632,6 +847,49 @@
                 <div class="export-buttons">
                     <button class="btn-export" onclick="exportCSV()">📥 Download CSV</button>
                     <button class="btn-export" onclick="exportJSON()">📄 Download JSON</button>
+                </div>
+
+                <!-- TAMI Chat Panel -->
+                <div class="tami-panel" id="tamiPanel">
+                    <!-- Scenario Mode Banner -->
+                    <div class="scenario-banner hidden" id="scenarioBanner">
+                        <span>📊 <strong>Scenario Mode:</strong> <span id="scenarioBannerName">Viewing scenario</span></span>
+                        <div class="scenario-banner-actions">
+                            <button class="scenario-banner-btn apply" onclick="tamiConfirmScenario()">✓ Confirm</button>
+                            <button class="scenario-banner-btn discard" onclick="tamiDiscardScenario()">✗ Discard</button>
+                        </div>
+                    </div>
+
+                    <!-- Header -->
+                    <div class="tami-header">
+                        <h3>🤖 TAMI</h3>
+                        <span class="tami-status" id="tamiStatus">Ready</span>
+                    </div>
+
+                    <!-- Messages -->
+                    <div class="tami-messages" id="tamiMessages">
+                        <div class="tami-message tami">
+                            <div class="tami-avatar tami">🤖</div>
+                            <div class="tami-bubble">
+                                <strong>Hi, I'm TAMI!</strong> I can help you understand your cash flow forecast and explore what-if scenarios.
+                                <br><br>
+                                Try asking me things like:
+                                <ul style="margin: 8px 0 0 16px; padding: 0;">
+                                    <li>"What happens if I lose a client?"</li>
+                                    <li>"When does my cash buffer breach?"</li>
+                                    <li>"How can I extend my runway?"</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Input Area -->
+                    <div class="tami-input-area">
+                        <input type="text" class="tami-input" id="tamiInput"
+                               placeholder="Ask TAMI about your forecast..."
+                               onkeypress="if(event.key === 'Enter') sendTamiMessage()">
+                        <button class="tami-send-btn" id="tamiSendBtn" onclick="sendTamiMessage()">Send</button>
+                    </div>
                 </div>
 
                 <!-- Week Details -->
@@ -741,7 +999,7 @@
                                         <option value="1">1st</option>
                                         <option value="15" selected>15th</option>
                                         <option value="28">28th</option>
-                                        <option value="last">Last day</option>
+                                        <option value="31">Last day</option>
                                     </select>
                                 </div>
                                 <div class="form-group">
@@ -1153,7 +1411,7 @@
             const type = document.getElementById('expenseType').value;
             const amount = parseFloat(document.getElementById('expenseAmount').value);
             const priority = document.getElementById('expensePriority').value;
-            const dueDay = document.getElementById('expenseDueDay').value;
+            const dueDay = parseInt(document.getElementById('expenseDueDay').value, 10);
             const frequency = document.getElementById('expenseFrequency').value;
 
             if (!name || !amount) {
@@ -1189,8 +1447,8 @@
             const list = document.getElementById('expensesList');
 
             list.innerHTML = expenses.map((expense, i) => {
-                const dueDay = expense.due_day || '15';
-                const dueDayLabel = dueDay === 'last' ? 'Last day' : `Day ${dueDay}`;
+                const dueDay = expense.due_day || 15;
+                const dueDayLabel = dueDay === 31 ? 'Last day' : `Day ${dueDay}`;
                 const freq = expense.frequency || 'monthly';
 
                 return `
@@ -1210,7 +1468,8 @@
         }
 
         // Cash Buffer Functions
-        let cashBufferConfig = {
+        // Try to load from localStorage first, otherwise use defaults
+        let cashBufferConfig = JSON.parse(localStorage.getItem('cashBufferConfig')) || {
             type: 'months',
             months: 3,
             fixedAmount: 0,
@@ -1269,6 +1528,39 @@
                     previewText.innerHTML = bufferText;
                 }
             }
+
+            // Save to localStorage for persistence
+            localStorage.setItem('cashBufferConfig', JSON.stringify(cashBufferConfig));
+        }
+
+        // Get current buffer amount (recalculate if needed)
+        function getBufferAmount() {
+            // If we have a calculated amount, use it
+            if (cashBufferConfig.calculatedAmount > 0) {
+                return cashBufferConfig.calculatedAmount;
+            }
+
+            // Otherwise, recalculate based on current expenses and config
+            const totalMonthlyExpenses = expenses.reduce((sum, exp) => sum + (exp.monthly_amount || 0), 0);
+
+            if (cashBufferConfig.type === 'months' && cashBufferConfig.months > 0) {
+                cashBufferConfig.calculatedAmount = totalMonthlyExpenses * cashBufferConfig.months;
+            } else if (cashBufferConfig.type === 'fixed' && cashBufferConfig.fixedAmount > 0) {
+                cashBufferConfig.calculatedAmount = cashBufferConfig.fixedAmount;
+            }
+
+            // If still 0, try to get from DOM elements (in case we're in onboarding)
+            if (cashBufferConfig.calculatedAmount === 0) {
+                const bufferType = document.getElementById('bufferType')?.value || 'months';
+                if (bufferType === 'months') {
+                    const months = parseInt(document.getElementById('bufferMonths')?.value || 3);
+                    cashBufferConfig.calculatedAmount = totalMonthlyExpenses * months;
+                } else {
+                    cashBufferConfig.calculatedAmount = parseFloat(document.getElementById('bufferFixedAmount')?.value || 0);
+                }
+            }
+
+            return cashBufferConfig.calculatedAmount;
         }
 
         // Submit Onboarding
@@ -1437,7 +1729,7 @@
             if (type === 'balance') {
                 // Cash Balance Line Chart with Buffer Line
                 const balanceData = weeks.map(w => parseFloat(w.ending_balance));
-                const bufferAmount = cashBufferConfig.calculatedAmount || 0;
+                const bufferAmount = getBufferAmount();
 
                 // Check for buffer breaches
                 const breachWeeks = [];
@@ -1469,18 +1761,20 @@
                         pointBorderColor: pointBorderColors,
                         pointBorderWidth: 2
                     },
-                    {
+                    // Buffer line - only show if buffer > 0
+                    ...(bufferAmount > 0 ? [{
                         label: 'Cash Buffer (Minimum)',
-                        data: weeks.map(() => bufferAmount),
+                        data: Array(weeks.length).fill(bufferAmount),
                         borderColor: '#dc3545',
-                        backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                        backgroundColor: 'transparent',
                         borderWidth: 3,
                         borderDash: [10, 5],
                         fill: false,
                         tension: 0,
                         pointRadius: 0,
-                        pointHoverRadius: 0
-                    }
+                        pointHoverRadius: 0,
+                        order: 0
+                    }] : [])
                 ];
 
                 currentChart = new Chart(ctx, {
@@ -1502,11 +1796,12 @@
                                 callbacks: {
                                     label: (context) => {
                                         const value = context.parsed.y;
-                                        if (context.datasetIndex === 0) {
-                                            const status = value < bufferAmount ? ' ⚠️ BELOW BUFFER' : '';
-                                            return `Balance: $${value.toLocaleString()}${status}`;
+                                        // Check by label instead of index since buffer may or may not exist
+                                        if (context.dataset.label === 'Cash Buffer (Minimum)') {
+                                            return `Buffer: $${value.toLocaleString()}`;
                                         }
-                                        return `Buffer: $${value.toLocaleString()}`;
+                                        const status = bufferAmount > 0 && value < bufferAmount ? ' ⚠️ BELOW BUFFER' : '';
+                                        return `Balance: $${value.toLocaleString()}${status}`;
                                     }
                                 }
                             }
@@ -1748,8 +2043,8 @@
             }
 
             list.innerHTML = managedExpenses.map((expense, i) => {
-                const dueDay = expense.due_day || '15';
-                const dueDayLabel = dueDay === 'last' ? 'Last day' : `Day ${dueDay}`;
+                const dueDay = expense.due_day || 15;
+                const dueDayLabel = dueDay === 31 ? 'Last day' : `Day ${dueDay}`;
                 const freq = expense.frequency || 'monthly';
 
                 return `
@@ -1968,7 +2263,7 @@
             const type = document.getElementById('manageExpenseType').value;
             const amount = parseFloat(document.getElementById('manageExpenseAmount').value);
             const priority = document.getElementById('manageExpensePriority').value;
-            const dueDay = document.getElementById('manageExpenseDueDay').value;
+            const dueDay = parseInt(document.getElementById('manageExpenseDueDay').value, 10);
             const frequency = document.getElementById('manageExpenseFrequency').value;
 
             if (!name || !amount) {
@@ -2256,6 +2551,10 @@
             }
 
             try {
+                // Check if this is a linked scenario from a suggestion
+                const linkedInfo = window.pendingLinkedScenario;
+                const parentScenarioId = linkedInfo ? linkedInfo.parentScenarioId : null;
+
                 // Create scenario
                 const scenarioResponse = await fetch(`${API_BASE}/scenarios/scenarios`, {
                     method: 'POST',
@@ -2264,11 +2563,15 @@
                         user_id: currentUserId,
                         name: name,
                         scenario_type: type,
-                        entry_path: 'user_defined',
+                        entry_path: linkedInfo ? 'tamio_suggested' : 'user_defined',
                         scope_config: scopeConfig,
-                        parameters: parameters
+                        parameters: parameters,
+                        parent_scenario_id: parentScenarioId
                     })
                 });
+
+                // Clear the pending linked scenario info
+                window.pendingLinkedScenario = null;
 
                 if (!scenarioResponse.ok) {
                     throw new Error('Failed to create scenario');
@@ -2297,6 +2600,7 @@
             } catch (error) {
                 console.error('Error building scenario:', error);
                 alert('Error building scenario: ' + error.message);
+                window.pendingLinkedScenario = null;  // Clear on error too
             }
         }
 
@@ -2325,6 +2629,47 @@
                 `).join('');
             }
 
+            // Build suggested dependent scenarios section
+            let suggestedHtml = '';
+            if (forecastData.suggested_scenarios && forecastData.suggested_scenarios.length > 0) {
+                const directionIcons = {
+                    'reduce_costs': '💰',
+                    'increase_costs': '📈',
+                    'reduce_revenue': '📉',
+                    'increase_revenue': '💵',
+                    'timing_change': '⏰'
+                };
+                const confidenceColors = {
+                    'high': '#4caf50',
+                    'medium': '#ff9800',
+                    'low': '#9e9e9e'
+                };
+
+                suggestedHtml = `
+                    <div style="margin-top: 20px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+                        <h4 style="color: #667eea; margin-bottom: 10px;">🔗 Related Scenarios to Consider</h4>
+                        <p style="color: #666; font-size: 14px; margin-bottom: 15px;">Based on this ${scenario.scenario_type.replace('_', ' ')}, you might also want to model:</p>
+                        <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                            ${forecastData.suggested_scenarios.map(s => `
+                                <div style="background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; flex: 1; min-width: 200px; max-width: 300px; cursor: pointer; transition: all 0.2s;"
+                                     onclick="createLinkedScenario('${scenario.id}', '${s.scenario_type}', ${JSON.stringify(s.prefill_params).replace(/"/g, '&quot;')})"
+                                     onmouseover="this.style.borderColor='#667eea'; this.style.background='#fff'"
+                                     onmouseout="this.style.borderColor='#e0e0e0'; this.style.background='#f8f9fa'">
+                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                        <span style="font-size: 20px;">${directionIcons[s.direction] || '📊'}</span>
+                                        <strong style="color: #333;">${s.title}</strong>
+                                        <span style="background: ${confidenceColors[s.confidence]}; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px;">${s.confidence}</span>
+                                    </div>
+                                    <p style="color: #666; font-size: 13px; margin: 0 0 8px 0;">${s.description}</p>
+                                    <p style="color: #667eea; font-size: 12px; font-style: italic; margin: 0;">→ ${s.question}</p>
+                                    ${s.typical_lag_weeks > 0 ? `<p style="color: #999; font-size: 11px; margin-top: 5px;">Typically takes effect after ${s.typical_lag_weeks} week(s)</p>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
             scenarioCard.innerHTML = `
                 <h3>${scenario.name}</h3>
                 <p style="color: #666;">Type: ${scenario.scenario_type.replace('_', ' ')}</p>
@@ -2340,6 +2685,8 @@
                 </div>
 
                 ${signalsHtml ? '<h4>⚠️ Decision Signals:</h4>' + signalsHtml : ''}
+
+                ${suggestedHtml}
 
                 <div class="buttons" style="margin-top: 20px;">
                     <button class="btn btn-secondary" onclick="viewScenarioForecast('${scenario.id}')">View Full Forecast</button>
@@ -2368,7 +2715,9 @@
 
             const weeks = forecast.weeks;
             const labels = weeks.map(w => `Week ${w.week_number}`);
-            const bufferAmount = cashBufferConfig.calculatedAmount || 0;
+            const bufferAmount = getBufferAmount();
+
+            console.log('Scenario Chart - Buffer Amount:', bufferAmount, 'Config:', cashBufferConfig);
 
             // Check scenario forecast for buffer breaches
             const scenarioBalances = weeks.map(w => parseFloat(w.ending_balance));
@@ -2422,18 +2771,20 @@
                             pointBorderColor: scenarioPointColors,
                             pointBorderWidth: 2
                         },
-                        {
+                        // Buffer line - only show if buffer > 0
+                        ...(bufferAmount > 0 ? [{
                             label: 'Cash Buffer (Minimum)',
-                            data: weeks.map(() => bufferAmount),
+                            data: Array(weeks.length).fill(bufferAmount),
                             borderColor: '#dc3545',
-                            backgroundColor: 'rgba(220, 53, 69, 0.05)',
+                            backgroundColor: 'transparent',
                             borderWidth: 3,
                             borderDash: [10, 5],
                             fill: false,
                             tension: 0,
                             pointRadius: 0,
-                            pointHoverRadius: 0
-                        }
+                            pointHoverRadius: 0,
+                            order: 0
+                        }] : [])
                     ]
                 },
                 options: {
@@ -2452,10 +2803,11 @@
                             callbacks: {
                                 label: (context) => {
                                     const value = context.parsed.y;
-                                    if (context.datasetIndex === 2) {
+                                    // Check by label instead of index since buffer may or may not exist
+                                    if (context.dataset.label === 'Cash Buffer (Minimum)') {
                                         return `Buffer: $${value.toLocaleString()}`;
                                     }
-                                    const status = value < bufferAmount ? ' ⚠️ BELOW BUFFER' : '';
+                                    const status = bufferAmount > 0 && value < bufferAmount ? ' ⚠️ BELOW BUFFER' : '';
                                     return `${context.dataset.label}: $${value.toLocaleString()}${status}`;
                                 }
                             }
@@ -2472,8 +2824,10 @@
                 }
             });
 
-            // Show scenario-specific buffer warning
-            showScenarioBufferWarning(baseBreachWeeks, scenarioBreachWeeks, bufferAmount);
+            // Show scenario-specific buffer warning (only if buffer is configured)
+            if (bufferAmount > 0) {
+                showScenarioBufferWarning(baseBreachWeeks, scenarioBreachWeeks, bufferAmount);
+            }
 
             // Scroll to chart
             document.querySelector('.chart-container').scrollIntoView({ behavior: 'smooth' });
@@ -2611,6 +2965,765 @@
             } catch (error) {
                 console.error('Error discarding scenario:', error);
                 alert('Error discarding scenario: ' + error.message);
+            }
+        }
+
+        // Add a linked layer to an existing scenario (instead of creating a new one)
+        async function createLinkedScenario(parentScenarioId, scenarioType, prefillParams) {
+            // Find the parent scenario to get context
+            const parentData = scenarios.find(s => s.scenario.id === parentScenarioId);
+            if (!parentData) {
+                alert('Parent scenario not found');
+                return;
+            }
+
+            // Format the scenario type for display
+            const typeDisplay = scenarioType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+            // Show a modal to collect layer parameters
+            showLayerModal(parentScenarioId, parentData.scenario.name, scenarioType, typeDisplay, prefillParams);
+        }
+
+        // Show modal for adding layer parameters
+        function showLayerModal(parentScenarioId, parentName, layerType, layerTypeDisplay, prefillParams) {
+            // Remove existing modal if any
+            const existingModal = document.getElementById('layerModal');
+            if (existingModal) existingModal.remove();
+
+            // Default date 2 weeks out
+            const defaultDate = new Date(Date.now() + 14*24*60*60*1000).toISOString().split('T')[0];
+
+            // Build form fields based on layer type
+            let fieldsHtml = '';
+            let helpText = '';
+
+            if (layerType === 'contractor_loss' || layerType === 'decreased_expense') {
+                helpText = layerType === 'contractor_loss'
+                    ? 'Model ending a contractor relationship to reduce expenses.'
+                    : 'Model reducing or canceling an expense.';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Monthly Amount to Reduce ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || 5000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Effective Date</label>
+                        <input type="date" id="layerEffectiveDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Description (optional)</label>
+                        <input type="text" id="layerDescription" placeholder="e.g., Cancel AWS subscription" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            } else if (layerType === 'firing') {
+                helpText = 'Model reducing permanent staff to lower payroll costs.';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Last Day</label>
+                        <input type="date" id="layerEffectiveDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Monthly Salary Saved ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || 8000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Severance Amount ($)</label>
+                        <input type="number" id="layerSeverance" value="0" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            } else if (layerType === 'payment_delay_out') {
+                helpText = 'Model delaying vendor payments to preserve cash.';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Delay by (weeks)</label>
+                        <input type="number" id="layerDelayWeeks" value="${prefillParams.delay_weeks || 2}" min="1" max="12" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Total Amount to Delay ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || 10000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            } else if (layerType === 'hiring' || layerType === 'contractor_gain') {
+                helpText = layerType === 'hiring'
+                    ? 'Model adding a new full-time team member.'
+                    : 'Model bringing on additional contractor capacity.';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Start Date</label>
+                        <input type="date" id="layerEffectiveDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Monthly ${layerType === 'hiring' ? 'Salary' : 'Cost'} ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || (layerType === 'hiring' ? 8000 : 5000)}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    ${layerType === 'hiring' ? `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Onboarding Costs ($)</label>
+                        <input type="number" id="layerOnboarding" value="${prefillParams.onboarding || 2000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    ` : ''}
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Role/Description (optional)</label>
+                        <input type="text" id="layerDescription" placeholder="e.g., Frontend developer" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            } else if (layerType === 'client_gain') {
+                helpText = 'Model winning new client revenue.';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Start Date</label>
+                        <input type="date" id="layerEffectiveDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Monthly Revenue ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || 10000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Client Name (optional)</label>
+                        <input type="text" id="layerDescription" placeholder="e.g., Acme Corp" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            } else if (layerType === 'increased_expense') {
+                helpText = 'Model adding a new expense or increasing an existing one.';
+                const category = prefillParams.category || '';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Expense Category</label>
+                        <select id="layerCategory" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="software" ${category === 'software' ? 'selected' : ''}>Software/Tools</option>
+                            <option value="onboarding" ${category === 'onboarding' ? 'selected' : ''}>Onboarding/Equipment</option>
+                            <option value="office" ${category === 'office' ? 'selected' : ''}>Office/Facilities</option>
+                            <option value="marketing" ${category === 'marketing' ? 'selected' : ''}>Marketing</option>
+                            <option value="other" ${!category || category === 'other' ? 'selected' : ''}>Other</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Monthly Amount ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || 1000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Expense Type</label>
+                        <select id="layerExpenseType" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="recurring">Recurring (monthly)</option>
+                            <option value="one_off" ${prefillParams.expense_type === 'one_off' ? 'selected' : ''}>One-time</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Effective Date</label>
+                        <input type="date" id="layerEffectiveDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Description (optional)</label>
+                        <input type="text" id="layerDescription" placeholder="e.g., New project management tool" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            } else if (layerType === 'client_change' || layerType === 'client_loss') {
+                helpText = layerType === 'client_loss'
+                    ? 'Model losing a client and the associated revenue.'
+                    : 'Model changes to an existing client relationship.';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Effective Date</label>
+                        <input type="date" id="layerEffectiveDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Monthly Revenue Impact ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || 5000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Client/Description (optional)</label>
+                        <input type="text" id="layerDescription" placeholder="e.g., Acme Corp scope reduction" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            } else {
+                // Generic fallback
+                helpText = 'Enter the details for this change.';
+                fieldsHtml = `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Amount ($)</label>
+                        <input type="number" id="layerAmount" value="${prefillParams.amount || 5000}" min="0" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">Effective Date</label>
+                        <input type="date" id="layerEffectiveDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+                `;
+            }
+
+            const modal = document.createElement('div');
+            modal.id = 'layerModal';
+            modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;';
+            modal.innerHTML = `
+                <div style="background: white; border-radius: 12px; padding: 30px; max-width: 500px; width: 90%; box-shadow: 0 10px 40px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: #333;">Add ${layerTypeDisplay}</h3>
+                        <button onclick="closeLayerModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999;">&times;</button>
+                    </div>
+                    <p style="color: #667eea; font-size: 14px; margin-bottom: 8px; font-weight: 500;">Adding to: ${parentName}</p>
+                    <p style="color: #666; font-size: 13px; margin-bottom: 20px; padding: 10px; background: #f8f9fa; border-radius: 6px;">${helpText}</p>
+
+                    ${fieldsHtml}
+
+                    <div style="display: flex; gap: 10px; margin-top: 25px;">
+                        <button onclick="closeLayerModal()" style="flex: 1; padding: 12px; border: 1px solid #ddd; background: white; border-radius: 6px; cursor: pointer; font-weight: 500;">Cancel</button>
+                        <button id="submitLayerBtn" onclick="submitLayer('${parentScenarioId}', '${layerType}', '${layerTypeDisplay}')" style="flex: 1; padding: 12px; border: none; background: #667eea; color: white; border-radius: 6px; cursor: pointer; font-weight: bold;">Add Layer</button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+        }
+
+        function closeLayerModal() {
+            const modal = document.getElementById('layerModal');
+            if (modal) modal.remove();
+        }
+
+        async function submitLayer(parentScenarioId, layerType, layerTypeDisplay) {
+            // Show loading state
+            const submitBtn = document.getElementById('submitLayerBtn');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Adding...';
+            }
+
+            // Collect parameters from the form
+            const parameters = {};
+
+            const amountInput = document.getElementById('layerAmount');
+            if (amountInput) {
+                parameters.amount = parseFloat(amountInput.value) || 0;
+                parameters.monthly_estimate = parameters.amount;  // Alias for some handlers
+                parameters.monthly_revenue = parameters.amount;   // Alias for client_gain
+                parameters.monthly_salary = parameters.amount;    // Alias for hiring
+            }
+
+            const effectiveDateInput = document.getElementById('layerEffectiveDate');
+            if (effectiveDateInput && effectiveDateInput.value) {
+                parameters.effective_date = effectiveDateInput.value;
+                parameters.end_date = effectiveDateInput.value;    // Alias for firing/contractor_loss
+                parameters.start_date = effectiveDateInput.value;  // Alias for hiring/contractor_gain
+            }
+
+            const severanceInput = document.getElementById('layerSeverance');
+            if (severanceInput) {
+                parameters.severance_amount = parseFloat(severanceInput.value) || 0;
+            }
+
+            const delayWeeksInput = document.getElementById('layerDelayWeeks');
+            if (delayWeeksInput) {
+                parameters.delay_weeks = parseInt(delayWeeksInput.value) || 2;
+            }
+
+            const descriptionInput = document.getElementById('layerDescription');
+            if (descriptionInput && descriptionInput.value) {
+                parameters.expense_name = descriptionInput.value;
+                parameters.description = descriptionInput.value;
+                parameters.client_name = descriptionInput.value;  // For client scenarios
+            }
+
+            // Handle category dropdown
+            const categoryInput = document.getElementById('layerCategory');
+            if (categoryInput) {
+                parameters.category = categoryInput.value;
+            }
+
+            // Handle expense type dropdown
+            const expenseTypeInput = document.getElementById('layerExpenseType');
+            if (expenseTypeInput) {
+                parameters.expense_type = expenseTypeInput.value;
+                parameters.is_recurring = expenseTypeInput.value === 'recurring';
+            }
+
+            // Handle onboarding costs for hiring
+            const onboardingInput = document.getElementById('layerOnboarding');
+            if (onboardingInput) {
+                parameters.onboarding_costs = parseFloat(onboardingInput.value) || 0;
+            }
+
+            closeLayerModal();
+
+            try {
+                // Add the layer to the existing scenario
+                const response = await fetch(`${API_BASE}/scenarios/scenarios/${parentScenarioId}/add-layer`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        layer_type: layerType,
+                        layer_name: layerTypeDisplay,
+                        parameters: parameters
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to add layer');
+                }
+
+                const result = await response.json();
+
+                // Refresh the scenario forecast to show combined impact
+                const forecastResponse = await fetch(`${API_BASE}/scenarios/scenarios/${parentScenarioId}/forecast`);
+                const forecastData = await forecastResponse.json();
+
+                // Update the scenario in our local array
+                const scenarioIndex = scenarios.findIndex(s => s.scenario.id === parentScenarioId);
+                if (scenarioIndex >= 0) {
+                    scenarios[scenarioIndex].forecastData = forecastData;
+                    scenarios[scenarioIndex].scenario.linked_scenarios = result.linked_scenarios;
+                }
+
+                // Update the display
+                const scenarioCard = document.getElementById(`scenario-${parentScenarioId}`);
+                if (scenarioCard) {
+                    const parentData = scenarios[scenarioIndex];
+                    displayScenarioUpdated(parentData.scenario, forecastData, scenarioCard);
+                }
+
+                // Show success toast instead of alert
+                showToast(`✓ ${layerTypeDisplay} added to scenario`, 'success');
+
+                // Update the chart to show the combined scenario impact
+                viewScenarioForecast(parentScenarioId);
+
+            } catch (error) {
+                console.error('Error adding layer:', error);
+                showToast('Error adding layer: ' + error.message, 'error');
+            }
+        }
+
+        // Toast notification helper
+        function showToast(message, type = 'success') {
+            const existingToast = document.getElementById('toast');
+            if (existingToast) existingToast.remove();
+
+            const toast = document.createElement('div');
+            toast.id = 'toast';
+            toast.style.cssText = `
+                position: fixed;
+                bottom: 30px;
+                left: 50%;
+                transform: translateX(-50%);
+                padding: 15px 30px;
+                border-radius: 8px;
+                color: white;
+                font-weight: 500;
+                z-index: 2000;
+                animation: fadeInUp 0.3s ease;
+                background: ${type === 'success' ? '#4caf50' : '#f44336'};
+            `;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 0.3s';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Update an existing scenario card with new data
+        function displayScenarioUpdated(scenario, forecastData, existingCard) {
+            const baseEndingBalance = parseFloat(forecastData.base_forecast.weeks[forecastData.base_forecast.weeks.length - 1].ending_balance);
+            const scenarioEndingBalance = parseFloat(forecastData.scenario_forecast.weeks[forecastData.scenario_forecast.weeks.length - 1].ending_balance);
+            const impact = scenarioEndingBalance - baseEndingBalance;
+            const impactColor = impact >= 0 ? '#4caf50' : '#f44336';
+
+            // Build linked layers display
+            let layersHtml = '';
+            if (scenario.linked_scenarios && scenario.linked_scenarios.length > 0) {
+                layersHtml = `
+                    <div style="background: #e8eaf6; padding: 10px; border-radius: 6px; margin: 10px 0;">
+                        <strong style="color: #667eea;">📚 Combined Layers (${scenario.linked_scenarios.length + 1}):</strong>
+                        <ul style="margin: 5px 0 0 20px; padding: 0;">
+                            <li style="color: #333;">${scenario.name} (Primary)</li>
+                            ${scenario.linked_scenarios.map(l => `<li style="color: #333;">${l.layer_name}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            // Build decision signals
+            let signalsHtml = '';
+            if (forecastData.decision_signals && forecastData.decision_signals.signals) {
+                signalsHtml = forecastData.decision_signals.signals.map(signal => `
+                    <div style="background: ${signal.severity === 'red' ? '#ffebee' : '#fff3e0'}; border-left: 4px solid ${signal.severity === 'red' ? '#f44336' : '#ff9800'}; padding: 15px; margin: 10px 0; border-radius: 4px;">
+                        <strong>${signal.title}</strong>
+                        <p style="margin: 5px 0;">${signal.message}</p>
+                        ${signal.action_window_weeks !== null ? `<p style="color: #666; font-size: 14px;">Action window: ${signal.action_window_weeks} weeks</p>` : ''}
+                    </div>
+                `).join('');
+            }
+
+            // Build suggested scenarios
+            let suggestedHtml = '';
+            if (forecastData.suggested_scenarios && forecastData.suggested_scenarios.length > 0) {
+                const directionIcons = {
+                    'reduce_costs': '💰',
+                    'increase_costs': '📈',
+                    'reduce_revenue': '📉',
+                    'increase_revenue': '💵',
+                    'timing_change': '⏰'
+                };
+                const confidenceColors = {
+                    'high': '#4caf50',
+                    'medium': '#ff9800',
+                    'low': '#9e9e9e'
+                };
+
+                suggestedHtml = `
+                    <div style="margin-top: 20px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+                        <h4 style="color: #667eea; margin-bottom: 10px;">🔗 Add More Related Changes</h4>
+                        <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                            ${forecastData.suggested_scenarios.map(s => `
+                                <div style="background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; flex: 1; min-width: 200px; max-width: 300px; cursor: pointer; transition: all 0.2s;"
+                                     onclick="createLinkedScenario('${scenario.id}', '${s.scenario_type}', ${JSON.stringify(s.prefill_params).replace(/"/g, '&quot;')})"
+                                     onmouseover="this.style.borderColor='#667eea'; this.style.background='#fff'"
+                                     onmouseout="this.style.borderColor='#e0e0e0'; this.style.background='#f8f9fa'">
+                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                        <span style="font-size: 20px;">${directionIcons[s.direction] || '📊'}</span>
+                                        <strong style="color: #333;">${s.title}</strong>
+                                        <span style="background: ${confidenceColors[s.confidence]}; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px;">${s.confidence}</span>
+                                    </div>
+                                    <p style="color: #666; font-size: 13px; margin: 0;">${s.description}</p>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            existingCard.innerHTML = `
+                <h3>${scenario.name}</h3>
+                <p style="color: #666;">Type: ${scenario.scenario_type.replace('_', ' ')}</p>
+
+                ${layersHtml}
+
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
+                    <strong>Combined Impact on Week 13:</strong>
+                    <p style="font-size: 24px; color: ${impactColor}; margin: 5px 0;">
+                        ${impact >= 0 ? '+' : ''}$${impact.toLocaleString()}
+                    </p>
+                    <p style="color: #666; font-size: 14px;">
+                        Base: $${baseEndingBalance.toLocaleString()} → Scenario: $${scenarioEndingBalance.toLocaleString()}
+                    </p>
+                </div>
+
+                ${signalsHtml ? '<h4>⚠️ Decision Signals:</h4>' + signalsHtml : ''}
+
+                ${suggestedHtml}
+
+                <div class="buttons" style="margin-top: 20px;">
+                    <button class="btn btn-secondary" onclick="viewScenarioForecast('${scenario.id}')">View Full Forecast</button>
+                    <button class="btn btn-primary" onclick="confirmScenario('${scenario.id}')">✓ Confirm & Apply</button>
+                    <button class="btn" onclick="discardScenario('${scenario.id}')" style="background: #f44336; color: white;">✗ Discard</button>
+                </div>
+            `;
+        }
+
+        // ============================================================
+        // TAMI CHAT FUNCTIONS
+        // ============================================================
+
+        // TAMI conversation state
+        let tamiConversation = [];
+        let tamiActiveScenarioId = null;
+        let tamiIsTyping = false;
+
+        // Simple markdown to HTML converter
+        function markdownToHtml(md) {
+            if (!md) return '';
+            return md
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/`(.*?)`/g, '<code style="background:#f0f0f0;padding:2px 4px;border-radius:3px;">$1</code>')
+                .replace(/\n\n/g, '<br><br>')
+                .replace(/\n/g, '<br>')
+                .replace(/- (.*?)(?=\n|$)/g, '<li>$1</li>')
+                .replace(/<li>/g, '<ul style="margin:8px 0 0 16px;padding:0;"><li>')
+                .replace(/<\/li>(?![\s\S]*<li>)/g, '</li></ul>');
+        }
+
+        // Send message to TAMI
+        async function sendTamiMessage() {
+            const input = document.getElementById('tamiInput');
+            const message = input.value.trim();
+
+            if (!message || tamiIsTyping) return;
+
+            // Clear input
+            input.value = '';
+
+            // Add user message to UI
+            addTamiMessage(message, 'user');
+
+            // Add to conversation history
+            tamiConversation.push({
+                role: 'user',
+                content: message
+            });
+
+            // Show typing indicator
+            showTamiTyping(true);
+            setTamiStatus('Thinking...');
+
+            try {
+                // Call TAMI API
+                const response = await fetch(`${API_BASE}/tami/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: currentUserId,
+                        message: message,
+                        conversation_history: tamiConversation.slice(-10), // Last 10 messages
+                        active_scenario_id: tamiActiveScenarioId
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to get response from TAMI');
+                }
+
+                const data = await response.json();
+                const tamiResponse = data.response;
+
+                // Add TAMI response to UI
+                addTamiMessage(
+                    tamiResponse.message_markdown,
+                    'tami',
+                    tamiResponse.ui_hints
+                );
+
+                // Add to conversation history
+                tamiConversation.push({
+                    role: 'assistant',
+                    content: tamiResponse.message_markdown
+                });
+
+                // Handle UI hints
+                if (tamiResponse.ui_hints) {
+                    handleTamiUiHints(tamiResponse.ui_hints);
+                }
+
+                // Check if any tool calls were made (scenario created)
+                if (data.tool_calls_made && data.tool_calls_made.length > 0) {
+                    for (const toolCall of data.tool_calls_made) {
+                        if (toolCall.result && toolCall.result.scenario_id) {
+                            tamiActiveScenarioId = toolCall.result.scenario_id;
+                            // Refresh scenarios list
+                            await loadActiveScenarios();
+                        }
+                    }
+                }
+
+                setTamiStatus('Ready');
+
+            } catch (error) {
+                console.error('TAMI error:', error);
+                addTamiMessage(
+                    "I'm having trouble connecting right now. Please try again in a moment.",
+                    'tami'
+                );
+                setTamiStatus('Error');
+            } finally {
+                showTamiTyping(false);
+            }
+        }
+
+        // Add message to TAMI chat
+        function addTamiMessage(content, sender, uiHints = null) {
+            const messagesDiv = document.getElementById('tamiMessages');
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `tami-message ${sender}`;
+
+            const avatar = sender === 'tami' ? '🤖' : '👤';
+            const avatarClass = sender;
+
+            let actionsHtml = '';
+            if (uiHints && uiHints.suggested_actions && uiHints.suggested_actions.length > 0) {
+                actionsHtml = `
+                    <div class="tami-actions">
+                        ${uiHints.suggested_actions.map(action => `
+                            <button class="tami-action-btn" onclick="handleTamiAction(${JSON.stringify(action).replace(/"/g, '&quot;')})">
+                                ${action.label}
+                            </button>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            messageDiv.innerHTML = `
+                <div class="tami-avatar ${avatarClass}">${avatar}</div>
+                <div class="tami-bubble">
+                    ${markdownToHtml(content)}
+                    ${actionsHtml}
+                </div>
+            `;
+
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Show/hide typing indicator
+        function showTamiTyping(show) {
+            tamiIsTyping = show;
+            const messagesDiv = document.getElementById('tamiMessages');
+
+            // Remove existing typing indicator
+            const existing = document.getElementById('tamiTypingIndicator');
+            if (existing) existing.remove();
+
+            if (show) {
+                const typingDiv = document.createElement('div');
+                typingDiv.id = 'tamiTypingIndicator';
+                typingDiv.className = 'tami-message tami';
+                typingDiv.innerHTML = `
+                    <div class="tami-avatar tami">🤖</div>
+                    <div class="tami-bubble">
+                        <div class="tami-typing">
+                            <div class="tami-typing-dot"></div>
+                            <div class="tami-typing-dot"></div>
+                            <div class="tami-typing-dot"></div>
+                        </div>
+                    </div>
+                `;
+                messagesDiv.appendChild(typingDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+
+            // Disable/enable send button
+            document.getElementById('tamiSendBtn').disabled = show;
+        }
+
+        // Set TAMI status
+        function setTamiStatus(status) {
+            document.getElementById('tamiStatus').textContent = status;
+        }
+
+        // Handle UI hints from TAMI response
+        function handleTamiUiHints(hints) {
+            const banner = document.getElementById('scenarioBanner');
+
+            if (hints.show_scenario_banner) {
+                banner.classList.remove('hidden');
+            } else {
+                banner.classList.add('hidden');
+            }
+        }
+
+        // Handle action button clicks
+        async function handleTamiAction(action) {
+            if (action.action === 'call_tool' && action.tool_name) {
+                // Execute the tool via chat
+                const toolDescription = action.label;
+                addTamiMessage(`Executing: ${toolDescription}...`, 'user');
+
+                try {
+                    let endpoint, body;
+
+                    // Handle both old (dot) and new (underscore) tool name formats
+                    const toolName = action.tool_name.replace(/\./g, '_');
+
+                    if (toolName === 'scenario_create_or_update_layer') {
+                        endpoint = `${API_BASE}/tami/scenario/layer/create_or_update`;
+                        body = {
+                            user_id: currentUserId,
+                            scenario_type: action.tool_args?.scenario_type || 'client_loss',
+                            scope: action.tool_args?.scope || {},
+                            params: action.tool_args?.params || {},
+                            name: action.tool_args?.name || action.label
+                        };
+                    } else if (toolName === 'scenario_discard_layer') {
+                        endpoint = `${API_BASE}/tami/scenario/layer/discard?user_id=${currentUserId}`;
+                        body = action.tool_args;
+                    } else if (toolName === 'scenario_get_suggestions') {
+                        endpoint = `${API_BASE}/tami/scenario/suggestions?user_id=${currentUserId}`;
+                        const response = await fetch(endpoint);
+                        const data = await response.json();
+                        addTamiMessage(
+                            `Here are some suggested scenarios based on your current forecast:\n\n${JSON.stringify(data.suggestions, null, 2)}`,
+                            'tami'
+                        );
+                        return;
+                    } else if (toolName === 'plan_build_goal_scenarios') {
+                        endpoint = `${API_BASE}/tami/plan/goal`;
+                        body = {
+                            user_id: currentUserId,
+                            goal: action.tool_args?.goal || action.label,
+                            constraints: action.tool_args?.constraints || {}
+                        };
+                    } else {
+                        // For unknown tools or simple explore actions, send as a follow-up chat message
+                        await sendTamiMessage(`Tell me more about: ${action.label}`);
+                        return;
+                    }
+
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+
+                    const result = await response.json();
+
+                    if (result.scenario_id) {
+                        tamiActiveScenarioId = result.scenario_id;
+                        await loadActiveScenarios();
+                    }
+
+                    addTamiMessage(result.message || 'Action completed.', 'tami');
+
+                } catch (error) {
+                    addTamiMessage(`Error executing action: ${error.message}`, 'tami');
+                }
+            } else if (action.action === 'send_message' || action.message) {
+                // Handle actions that should send a message to TAMI
+                await sendTamiMessage(action.message || action.label);
+            } else {
+                // Default: send the label as a follow-up question
+                await sendTamiMessage(`Tell me more about: ${action.label}`);
+            }
+        }
+
+        // Confirm scenario from banner
+        async function tamiConfirmScenario() {
+            if (!tamiActiveScenarioId) return;
+
+            try {
+                await confirmScenario(tamiActiveScenarioId);
+                tamiActiveScenarioId = null;
+                document.getElementById('scenarioBanner').classList.add('hidden');
+                addTamiMessage('Scenario confirmed and applied to your base forecast.', 'tami');
+            } catch (error) {
+                addTamiMessage(`Error confirming scenario: ${error.message}`, 'tami');
+            }
+        }
+
+        // Discard scenario from banner
+        async function tamiDiscardScenario() {
+            if (!tamiActiveScenarioId) return;
+
+            try {
+                await discardScenario(tamiActiveScenarioId);
+                tamiActiveScenarioId = null;
+                document.getElementById('scenarioBanner').classList.add('hidden');
+                addTamiMessage('Scenario discarded.', 'tami');
+            } catch (error) {
+                addTamiMessage(`Error discarding scenario: ${error.message}`, 'tami');
+            }
+        }
+
+        // Update scenario banner
+        function updateScenarioBanner(scenarioName, show = true) {
+            const banner = document.getElementById('scenarioBanner');
+            const nameSpan = document.getElementById('scenarioBannerName');
+
+            if (show && scenarioName) {
+                nameSpan.textContent = scenarioName;
+                banner.classList.remove('hidden');
+            } else {
+                banner.classList.add('hidden');
             }
         }
     </script>
