@@ -2488,11 +2488,11 @@
                 const response = await fetch(`${API_BASE}/xero/connect?user_id=${currentUserId}`);
                 const data = await response.json();
 
-                if (data.authorization_url) {
+                if (data.auth_url) {
                     // Store user ID in session storage for callback
                     sessionStorage.setItem('xero_user_id', currentUserId);
                     // Redirect to Xero OAuth
-                    window.location.href = data.authorization_url;
+                    window.location.href = data.auth_url;
                 } else {
                     alert('Error getting authorization URL: ' + (data.detail || 'Unknown error'));
                 }
