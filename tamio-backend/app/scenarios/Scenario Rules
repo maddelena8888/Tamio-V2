@@ -1,0 +1,210 @@
+flowchart TD
+
+%% =========================================================
+%% COMMON SCENARIO TAIL (shared resolution path)
+%% =========================================================
+subgraph COMMON["Common Scenario Resolution"]
+  C0["Build Scenario Layer (canonical deltas)"] --> C1["Overlay forecast: Base + Scenario"]
+  C1 --> C2["Evaluate financial rules<br/>Buffer / Payroll coverage / Capex gate"]
+  C2 --> C3{"User action"}
+  C3 -->|Iterate| C4["Adjust inputs / add linked changes"]
+  C3 -->|Discard| C5["Discard scenario<br/>Base forecast unchanged"]
+  C3 -->|Confirm true| C6["Commit scenario to canonical data<br/>Update schedules/events + log confirmation"]
+end
+
+%% =========================================================
+%% SCENARIO 1: PAYMENT DELAY (CASH IN)
+%% =========================================================
+subgraph S1["Payment Delay (Cash In)"]
+  S1A["Start: Payment Delay (Cash In)"] --> S1B["Select scope: client + events<br/>Invoice / Milestone / Retainer / Usage"]
+  S1B --> S1C["Input: delay duration (days/weeks)"]
+  S1C --> S1D{"Partial payment?"}
+  S1D -->|No| S1E["Shift expected cash-in event dates by +delay"]
+  S1D -->|Yes| S1F["Input: partial % or amount<br/>+ paid date (if known)"]
+  S1F --> S1G["Split event:<br/>1) Actual receipt (paid portion)<br/>2) Remaining expected (shifted)"]
+  S1E --> S1H["Confidence downshift<br/>(e.g., High → Medium)"]
+  S1G --> S1H
+  S1H --> S1I{"Prompt: does this delay affect cash-out timing?"}
+  S1I -->|Yes| S1J["Optional linked change:<br/>Delay vendors OR reduce discretionary spend"]
+  S1I -->|No| S1K["No linked changes"]
+  S1J --> S1L["Proceed to scenario computation"]
+  S1K --> S1L
+end
+S1L --> C0
+
+%% =========================================================
+%% SCENARIO 2: CLIENT LOSS
+%% =========================================================
+subgraph S2["Client Loss"]
+  S2A["Start: Client Loss"] --> S2B["Select scope: client(s) + effective end date"]
+  S2B --> S2C["Canonical adjustment:<br/>Remove all future cash-in events from end date"]
+  S2C --> S2D["Mark agreement inactive<br/>and delete future scheduled events"]
+  S2D --> S2E{"Prompt: should any costs reduce too?"}
+  S2E -->|Yes| S2F["Choose cost linkage type:<br/>Contractors / Tools / Project costs"]
+  S2E -->|No| S2G["Keep costs unchanged<br/>(assume fixed)"]
+  S2F --> S2H["Input: reduction amount or %<br/>+ lag (e.g., 0–4 weeks)"]
+  S2H --> S2I["Canonical adjustment:<br/>Reduce future cash-out events per linkage + lag"]
+  S2G --> S2J["Proceed to scenario computation"]
+  S2I --> S2J
+end
+S2J --> C0
+
+%% =========================================================
+%% SCENARIO 3: CLIENT GAIN
+%% =========================================================
+subgraph S3["Client Gain"]
+  S3A["Start: Client Gain"] --> S3B["Input: start date + agreement type<br/>Project / Retainer / Usage"]
+  S3B --> S3C["Input: amount + cadence / milestone schedule<br/>+ payment terms"]
+  S3C --> S3D["Canonical adjustment:<br/>Create Revenue Agreement + Schedule"]
+  S3D --> S3E["Generate expected cash-in events<br/>from start date"]
+  S3E --> S3F{"Prompt: does this require more capacity/cost?"}
+  S3F -->|Yes| S3G["Add linked cost(s):<br/>Contractors / Hiring / Tools / One-off onboarding"]
+  S3F -->|No| S3H["No linked costs"]
+  S3G --> S3I["Input: cost amounts + start date<br/>+ fixed/variable + lag (optional)"]
+  S3I --> S3J["Canonical adjustment:<br/>Create/modify obligation schedules + events"]
+  S3H --> S3K["Proceed to scenario computation"]
+  S3J --> S3K
+end
+S3K --> C0
+
+%% =========================================================
+%% SCENARIO 4: CLIENT CHANGE (Upsell / Downsell / Scope change)
+%% =========================================================
+subgraph S4["Client Change"]
+  S4A["Start: Client Change"] --> S4B["Select scope: client + affected agreement(s)"]
+  S4B --> S4C["Input: change type<br/>Upsell / Downsell / Scope change"]
+  S4C --> S4D["Input: delta amount or new amount<br/>+ effective date"]
+  S4D --> S4E["Canonical adjustment:<br/>Modify future cash-in event amounts from effective date"]
+  S4E --> S4F{"Prompt: does cost base change too?"}
+  S4F -->|Yes| S4G["Select linked cost drivers<br/>Contractors / Delivery / Tools"]
+  S4F -->|No| S4H["No linked cost changes"]
+  S4G --> S4I["Input: cost delta or % linkage<br/>+ lag (optional)"]
+  S4I --> S4J["Canonical adjustment:<br/>Modify future cash-out events from effective date"]
+  S4H --> S4K["Proceed to scenario computation"]
+  S4J --> S4K
+end
+S4K --> C0
+
+%% =========================================================
+%% SCENARIO 5: HIRING (Payroll Gain)
+%% =========================================================
+subgraph S5["Hiring (Payroll Gain)"]
+  S5A["Start: Hiring"] --> S5B["Input: role + start date"]
+  S5B --> S5C["Input: monthly cost (fully loaded)<br/>+ pay cycle (weekly/biweekly/monthly)"]
+  S5C --> S5D{"One-off hiring costs?"}
+  S5D -->|Yes| S5E["Input: one-off costs<br/>(recruiter, equipment, onboarding) + timing"]
+  S5D -->|No| S5F["No one-off costs"]
+  S5E --> S5G["Canonical adjustment:<br/>Add one-off cash-out event(s)"]
+  S5F --> S5H["Canonical adjustment:<br/>Add recurring payroll obligation schedule"]
+  S5G --> S5H
+  S5H --> S5I{"Prompt: does revenue need to increase to support hire?"}
+  S5I -->|Yes| S5J["Optional linked change:<br/>Add client gain / upsell target (manual)"]
+  S5I -->|No| S5K["No linked revenue change"]
+  S5J --> S5L["Proceed to scenario computation"]
+  S5K --> S5L
+end
+S5L --> C0
+
+%% =========================================================
+%% SCENARIO 6: FIRING (Payroll Loss)
+%% =========================================================
+subgraph S6["Firing (Payroll Loss)"]
+  S6A["Start: Firing"] --> S6B["Select scope: role/employee + end date"]
+  S6B --> S6C["Input: monthly cost removed<br/>+ final pay date"]
+  S6C --> S6D{"Severance or termination costs?"}
+  S6D -->|Yes| S6E["Input: severance amount<br/>+ payout date(s)"]
+  S6D -->|No| S6F["No severance"]
+  S6E --> S6G["Canonical adjustment:<br/>Add one-off severance cash-out event(s)"]
+  S6F --> S6H["Canonical adjustment:<br/>Remove future payroll events from end date"]
+  S6G --> S6H
+  S6H --> S6I{"Prompt: does delivery capacity drop (affects revenue)?"}
+  S6I -->|Yes| S6J["Optional linked change:<br/>Client loss / downsell / slower delivery (manual)"]
+  S6I -->|No| S6K["No linked revenue change"]
+  S6J --> S6L["Proceed to scenario computation"]
+  S6K --> S6L
+end
+S6L --> C0
+
+%% =========================================================
+%% SCENARIO 7: CONTRACTOR GAIN
+%% =========================================================
+subgraph S7["Contractor Gain"]
+  S7A["Start: Contractor Gain"] --> S7B["Input: start date + monthly estimate<br/>or rate-based estimate"]
+  S7B --> S7C["Choose type: Fixed vs Variable"]
+  S7C --> S7D["Canonical adjustment:<br/>Add contractor obligation schedule + events"]
+  S7D --> S7E{"Prompt: linked to a client/project?"}
+  S7E -->|Yes| S7F["Link to client/project<br/>+ % linkage (optional)"]
+  S7E -->|No| S7G["No linkage"]
+  S7F --> S7H["Set lag (optional)<br/>0–4 weeks after revenue starts"]
+  S7H --> S7I["Canonical adjustment:<br/>Apply linkage rules to future cash-out events"]
+  S7G --> S7J["Proceed to scenario computation"]
+  S7I --> S7J
+end
+S7J --> C0
+
+%% =========================================================
+%% SCENARIO 8: CONTRACTOR LOSS
+%% =========================================================
+subgraph S8["Contractor Loss"]
+  S8A["Start: Contractor Loss"] --> S8B["Select scope: contractor spend bucket<br/>or linked client/project"]
+  S8B --> S8C["Input: end date or reduction %"]
+  S8C --> S8D["Canonical adjustment:<br/>Reduce/remove future contractor cash-out events"]
+  S8D --> S8E{"Prompt: any revenue impact (delivery slowdown)?"}
+  S8E -->|Yes| S8F["Optional linked change:<br/>Client change / delayed milestones (manual)"]
+  S8E -->|No| S8G["No linked revenue change"]
+  S8F --> S8H["Proceed to scenario computation"]
+  S8G --> S8H
+end
+S8H --> C0
+
+%% =========================================================
+%% SCENARIO 9: INCREASED EXPENSE (One-off or Recurring)
+%% =========================================================
+subgraph S9["Increased Expense"]
+  S9A["Start: Increased Expense"] --> S9B["Select category<br/>Tools / Rent / Marketing / Tax / Other"]
+  S9B --> S9C["Choose: One-off vs Recurring"]
+  S9C --> S9D["Input: amount + start date<br/>(+ end date if recurring)"]
+  S9D --> S9E["Canonical adjustment:<br/>Add new cash-out event(s) or obligation schedule"]
+  S9E --> S9F{"Prompt: is this gated by a rule? (capex gate/buffer)"}
+  S9F -->|Yes| S9G["Tag as gated spend<br/>and evaluate against rules"]
+  S9F -->|No| S9H["No gating"]
+  S9G --> S9I["Proceed to scenario computation"]
+  S9H --> S9I
+end
+S9I --> C0
+
+%% =========================================================
+%% SCENARIO 10: DECREASED EXPENSE (Reduce or Cancel)
+%% =========================================================
+subgraph S10["Decreased Expense"]
+  S10A["Start: Decreased Expense"] --> S10B["Select obligation/expense to reduce"]
+  S10B --> S10C["Input: reduction amount or %<br/>+ effective date"]
+  S10C --> S10D{"Termination logic needed? (fixed contracts)"}
+  S10D -->|Yes| S10E["Input: notice period + termination fee (if any)"]
+  S10D -->|No| S10F["No termination costs"]
+  S10E --> S10G["Canonical adjustment:<br/>Add one-off termination fee event(s)"]
+  S10F --> S10H["Canonical adjustment:<br/>Reduce/remove future cash-out events"]
+  S10G --> S10H
+  S10H --> S10I["Proceed to scenario computation"]
+end
+S10I --> C0
+
+%% =========================================================
+%% SCENARIO 11: PAYMENT DELAY (CASH OUT)
+%% =========================================================
+subgraph S11["Payment Delay (Cash Out)"]
+  S11A["Start: Payment Delay (Cash Out)"] --> S11B["Select scope: vendor/obligation<br/>Payroll / Rent / Tools / Tax / Other"]
+  S11B --> S11C["Input: delay duration (days/weeks)"]
+  S11C --> S11D{"Partial payment?"}
+  S11D -->|No| S11E["Shift expected cash-out event dates by +delay"]
+  S11D -->|Yes| S11F["Input: partial % or amount<br/>+ paid date (if known)"]
+  S11F --> S11G["Split event:<br/>1) Actual payment (paid portion)<br/>2) Remaining expected (shifted)"]
+  S11E --> S11H["Tag as delayed outflow<br/>and downshift confidence if inferred"]
+  S11G --> S11H
+  S11H --> S11I{"Prompt: does delaying this create clustering risk later?"}
+  S11I -->|Yes| S11J["Optional linked change:<br/>Create catch-up schedule or spread payments"]
+  S11I -->|No| S11K["No linked changes"]
+  S11J --> S11L["Proceed to scenario computation"]
+  S11K --> S11L
+end
+S11L --> C0

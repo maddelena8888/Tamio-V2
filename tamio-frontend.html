@@ -1175,6 +1175,9 @@
         // Initialize billing config
         updateBillingConfig();
 
+        // Handle Xero OAuth callback on page load
+        handleXeroCallback();
+
         // Navigation
         function nextPage() {
             if (currentPage === 1 && accounts.length === 0) {
@@ -2435,6 +2438,342 @@
             } catch (error) {
                 console.error('Error regenerating forecast:', error);
                 alert('Error regenerating forecast');
+            }
+        }
+
+        // ============================================================================
+        // XERO INTEGRATION FUNCTIONS
+        // ============================================================================
+
+        async function checkXeroStatus() {
+            if (!currentUserId) return;
+
+            const statusDiv = document.getElementById('xeroStatus');
+            const statusText = document.getElementById('xeroStatusText');
+            const notConnected = document.getElementById('xeroNotConnected');
+            const connected = document.getElementById('xeroConnected');
+
+            try {
+                const response = await fetch(`${API_BASE}/xero/status?user_id=${currentUserId}`);
+                const data = await response.json();
+
+                if (data.is_connected) {
+                    statusDiv.style.background = '#d4edda';
+                    statusText.innerHTML = `<strong style="color: #155724;">✓ Connected to Xero</strong><br>
+                        <small>Tenant: ${data.tenant_name || 'Unknown'}</small><br>
+                        <small>Last sync: ${data.last_sync_at ? new Date(data.last_sync_at).toLocaleString() : 'Never'}</small>`;
+                    notConnected.style.display = 'none';
+                    connected.style.display = 'block';
+                } else {
+                    statusDiv.style.background = '#e9ecef';
+                    statusText.innerHTML = '<span style="color: #666;">Not connected</span>';
+                    notConnected.style.display = 'block';
+                    connected.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Error checking Xero status:', error);
+                statusDiv.style.background = '#f8d7da';
+                statusText.innerHTML = '<span style="color: #721c24;">Error checking connection status</span>';
+            }
+        }
+
+        async function connectXero() {
+            if (!currentUserId) {
+                alert('Please complete onboarding first');
+                return;
+            }
+
+            try {
+                // Get the authorization URL from the backend
+                const response = await fetch(`${API_BASE}/xero/connect?user_id=${currentUserId}`);
+                const data = await response.json();
+
+                if (data.authorization_url) {
+                    // Store user ID in session storage for callback
+                    sessionStorage.setItem('xero_user_id', currentUserId);
+                    // Redirect to Xero OAuth
+                    window.location.href = data.authorization_url;
+                } else {
+                    alert('Error getting authorization URL: ' + (data.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error connecting to Xero:', error);
+                alert('Error connecting to Xero. Please try again.');
+            }
+        }
+
+        async function previewXeroData() {
+            if (!currentUserId) return;
+
+            const previewArea = document.getElementById('xeroPreviewArea');
+            const previewContent = document.getElementById('xeroPreviewContent');
+
+            previewArea.style.display = 'block';
+            previewContent.innerHTML = '<p>Loading preview...</p>';
+
+            try {
+                const response = await fetch(`${API_BASE}/xero/preview?user_id=${currentUserId}`);
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to fetch preview');
+                }
+
+                const data = await response.json();
+
+                let html = '<div style="max-height: 400px; overflow-y: auto;">';
+
+                // Contacts section
+                if (data.contacts && data.contacts.length > 0) {
+                    html += `<h5 style="margin-top: 15px; color: #333;">👥 Contacts (${data.contacts.length})</h5>`;
+                    html += '<table style="width: 100%; border-collapse: collapse; font-size: 14px;">';
+                    html += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Name</th><th style="padding: 8px; text-align: left;">Email</th><th style="padding: 8px; text-align: right;">Balance</th></tr>';
+                    data.contacts.slice(0, 10).forEach(c => {
+                        html += `<tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding: 8px;">${c.name || 'N/A'}</td>
+                            <td style="padding: 8px;">${c.email || '-'}</td>
+                            <td style="padding: 8px; text-align: right;">$${(c.balance || 0).toLocaleString()}</td>
+                        </tr>`;
+                    });
+                    if (data.contacts.length > 10) {
+                        html += `<tr><td colspan="3" style="padding: 8px; color: #666; text-align: center;">...and ${data.contacts.length - 10} more</td></tr>`;
+                    }
+                    html += '</table>';
+                }
+
+                // Invoices section
+                if (data.invoices && data.invoices.length > 0) {
+                    html += `<h5 style="margin-top: 20px; color: #333;">📄 Recent Invoices (${data.invoices.length})</h5>`;
+                    html += '<table style="width: 100%; border-collapse: collapse; font-size: 14px;">';
+                    html += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Invoice #</th><th style="padding: 8px; text-align: left;">Contact</th><th style="padding: 8px; text-align: right;">Amount</th><th style="padding: 8px; text-align: left;">Status</th></tr>';
+                    data.invoices.slice(0, 10).forEach(inv => {
+                        const statusColor = inv.status === 'PAID' ? '#4caf50' : inv.status === 'AUTHORISED' ? '#ff9800' : '#666';
+                        html += `<tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding: 8px;">${inv.invoice_number || 'N/A'}</td>
+                            <td style="padding: 8px;">${inv.contact_name || 'N/A'}</td>
+                            <td style="padding: 8px; text-align: right;">$${(inv.total || 0).toLocaleString()}</td>
+                            <td style="padding: 8px; color: ${statusColor};">${inv.status || 'N/A'}</td>
+                        </tr>`;
+                    });
+                    if (data.invoices.length > 10) {
+                        html += `<tr><td colspan="4" style="padding: 8px; color: #666; text-align: center;">...and ${data.invoices.length - 10} more</td></tr>`;
+                    }
+                    html += '</table>';
+                }
+
+                // Bills section
+                if (data.bills && data.bills.length > 0) {
+                    html += `<h5 style="margin-top: 20px; color: #333;">📋 Recent Bills (${data.bills.length})</h5>`;
+                    html += '<table style="width: 100%; border-collapse: collapse; font-size: 14px;">';
+                    html += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Bill #</th><th style="padding: 8px; text-align: left;">Contact</th><th style="padding: 8px; text-align: right;">Amount</th><th style="padding: 8px; text-align: left;">Status</th></tr>';
+                    data.bills.slice(0, 10).forEach(bill => {
+                        const statusColor = bill.status === 'PAID' ? '#4caf50' : bill.status === 'AUTHORISED' ? '#ff9800' : '#666';
+                        html += `<tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding: 8px;">${bill.invoice_number || 'N/A'}</td>
+                            <td style="padding: 8px;">${bill.contact_name || 'N/A'}</td>
+                            <td style="padding: 8px; text-align: right;">$${(bill.total || 0).toLocaleString()}</td>
+                            <td style="padding: 8px; color: ${statusColor};">${bill.status || 'N/A'}</td>
+                        </tr>`;
+                    });
+                    if (data.bills.length > 10) {
+                        html += `<tr><td colspan="4" style="padding: 8px; color: #666; text-align: center;">...and ${data.bills.length - 10} more</td></tr>`;
+                    }
+                    html += '</table>';
+                }
+
+                // Repeating invoices section
+                if (data.repeating_invoices && data.repeating_invoices.length > 0) {
+                    html += `<h5 style="margin-top: 20px; color: #333;">🔄 Repeating Invoices (${data.repeating_invoices.length})</h5>`;
+                    html += '<table style="width: 100%; border-collapse: collapse; font-size: 14px;">';
+                    html += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Contact</th><th style="padding: 8px; text-align: right;">Amount</th><th style="padding: 8px; text-align: left;">Schedule</th></tr>';
+                    data.repeating_invoices.forEach(ri => {
+                        html += `<tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding: 8px;">${ri.contact_name || 'N/A'}</td>
+                            <td style="padding: 8px; text-align: right;">$${(ri.total || 0).toLocaleString()}</td>
+                            <td style="padding: 8px;">${ri.schedule_unit || 'N/A'} (${ri.schedule_period || 1})</td>
+                        </tr>`;
+                    });
+                    html += '</table>';
+                }
+
+                if (!data.contacts?.length && !data.invoices?.length && !data.bills?.length && !data.repeating_invoices?.length) {
+                    html += '<p style="color: #666; text-align: center;">No data found in Xero</p>';
+                }
+
+                html += '</div>';
+                previewContent.innerHTML = html;
+
+            } catch (error) {
+                console.error('Error fetching preview:', error);
+                previewContent.innerHTML = `<p style="color: #dc3545;">Error loading preview: ${error.message}</p>`;
+            }
+        }
+
+        function hideXeroPreview() {
+            document.getElementById('xeroPreviewArea').style.display = 'none';
+        }
+
+        async function syncXeroData() {
+            if (!currentUserId) return;
+
+            const confirmed = confirm('This will import data from Xero and may update existing clients and events. Continue?');
+            if (!confirmed) return;
+
+            hideXeroPreview();
+
+            // Show syncing status
+            const statusDiv = document.getElementById('xeroStatus');
+            const statusText = document.getElementById('xeroStatusText');
+            statusDiv.style.background = '#fff3cd';
+            statusText.innerHTML = '<strong style="color: #856404;">⏳ Syncing with Xero...</strong>';
+
+            try {
+                const response = await fetch(`${API_BASE}/xero/sync`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: currentUserId,
+                        sync_type: 'full'
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Sync failed');
+                }
+
+                const data = await response.json();
+
+                // Show success
+                statusDiv.style.background = '#d4edda';
+                statusText.innerHTML = `<strong style="color: #155724;">✓ Sync Complete!</strong><br>
+                    <small>Created: ${data.records_created?.clients || 0} clients, ${data.records_created?.events || 0} events</small><br>
+                    <small>Updated: ${data.records_updated?.clients || 0} clients, ${data.records_updated?.events || 0} events</small>`;
+
+                // Reload managed data to reflect changes
+                await loadManagedData();
+
+                // Refresh the status
+                setTimeout(() => checkXeroStatus(), 2000);
+
+            } catch (error) {
+                console.error('Error syncing:', error);
+                statusDiv.style.background = '#f8d7da';
+                statusText.innerHTML = `<strong style="color: #721c24;">✗ Sync Failed</strong><br><small>${error.message}</small>`;
+            }
+        }
+
+        async function viewXeroSyncHistory() {
+            if (!currentUserId) return;
+
+            const historyArea = document.getElementById('xeroHistoryArea');
+            const historyContent = document.getElementById('xeroHistoryContent');
+
+            historyArea.style.display = 'block';
+            historyContent.innerHTML = '<p>Loading sync history...</p>';
+
+            try {
+                const response = await fetch(`${API_BASE}/xero/sync-history?user_id=${currentUserId}`);
+
+                if (!response.ok) {
+                    throw new Error('Failed to load history');
+                }
+
+                const logs = await response.json();
+
+                if (logs.length === 0) {
+                    historyContent.innerHTML = '<p style="color: #666; text-align: center;">No sync history yet</p>';
+                    return;
+                }
+
+                let html = '<table style="width: 100%; border-collapse: collapse; font-size: 14px;">';
+                html += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Date</th><th style="padding: 8px; text-align: left;">Status</th><th style="padding: 8px; text-align: left;">Details</th></tr>';
+
+                logs.forEach(log => {
+                    const statusColor = log.status === 'completed' ? '#4caf50' : log.status === 'failed' ? '#dc3545' : '#ff9800';
+                    const date = new Date(log.started_at).toLocaleString();
+                    let details = '';
+
+                    if (log.records_created) {
+                        details += `Created: ${log.records_created.clients || 0} clients, ${log.records_created.events || 0} events. `;
+                    }
+                    if (log.records_updated) {
+                        details += `Updated: ${log.records_updated.clients || 0} clients, ${log.records_updated.events || 0} events.`;
+                    }
+                    if (log.error_message) {
+                        details = log.error_message;
+                    }
+
+                    html += `<tr style="border-bottom: 1px solid #eee;">
+                        <td style="padding: 8px;">${date}</td>
+                        <td style="padding: 8px; color: ${statusColor}; font-weight: bold;">${log.status}</td>
+                        <td style="padding: 8px;">${details || '-'}</td>
+                    </tr>`;
+                });
+
+                html += '</table>';
+                historyContent.innerHTML = html;
+
+            } catch (error) {
+                console.error('Error loading history:', error);
+                historyContent.innerHTML = `<p style="color: #dc3545;">Error loading history: ${error.message}</p>`;
+            }
+        }
+
+        function hideXeroHistory() {
+            document.getElementById('xeroHistoryArea').style.display = 'none';
+        }
+
+        async function disconnectXero() {
+            if (!currentUserId) return;
+
+            const confirmed = confirm('Are you sure you want to disconnect Xero? This will not delete imported data.');
+            if (!confirmed) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/xero/disconnect?user_id=${currentUserId}`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Disconnect failed');
+                }
+
+                // Refresh status
+                checkXeroStatus();
+
+            } catch (error) {
+                console.error('Error disconnecting:', error);
+                alert('Error disconnecting from Xero: ' + error.message);
+            }
+        }
+
+        // Handle OAuth callback (check URL params on page load)
+        function handleXeroCallback() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const xeroConnected = urlParams.get('xero_connected');
+            const xeroError = urlParams.get('xero_error');
+
+            if (xeroConnected === 'true') {
+                // Clean URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+                // Restore user ID if stored
+                const storedUserId = sessionStorage.getItem('xero_user_id');
+                if (storedUserId) {
+                    currentUserId = storedUserId;
+                    sessionStorage.removeItem('xero_user_id');
+                }
+                // Show success and go to integrations
+                alert('Successfully connected to Xero!');
+                showPage(8); // Go to dashboard
+                showDataTab('integrations');
+            } else if (xeroError) {
+                // Clean URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+                alert('Error connecting to Xero: ' + xeroError);
             }
         }
 
