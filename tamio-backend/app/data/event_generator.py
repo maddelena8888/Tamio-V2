@@ -212,15 +212,28 @@ async def generate_events_from_bucket(
     today = date.today()
     forecast_end = today + timedelta(weeks=13)
 
+    # Use the bucket's due_day, defaulting to 15 if not set
+    due_day = bucket.due_day or 15
+
     # Generate monthly recurring events for 13 weeks (~3 months)
-    current_date = today.replace(day=1)  # Start of current month
+    # Start from current month
+    current_month = today.replace(day=1)
 
     for _ in range(4):  # Generate 4 months of expenses
-        if current_date <= forecast_end:
+        # Calculate the actual due date for this month
+        # Handle months with fewer days (e.g., Feb 30 -> Feb 28)
+        try:
+            expense_date = current_month.replace(day=due_day)
+        except ValueError:
+            # Day doesn't exist in this month (e.g., Feb 30), use last day
+            next_month = current_month + relativedelta(months=1)
+            expense_date = next_month - timedelta(days=1)
+
+        if today <= expense_date <= forecast_end:
             event = models.CashEvent(
                 user_id=bucket.user_id,
                 bucket_id=bucket.id,
-                date=current_date,
+                date=expense_date,
                 amount=bucket.monthly_amount,
                 direction="out",
                 event_type="expected_expense",
@@ -228,12 +241,13 @@ async def generate_events_from_bucket(
                 confidence="high" if bucket.is_stable else "medium",
                 confidence_reason="user_confirmed",
                 is_recurring=True,
-                recurrence_pattern="monthly"
+                recurrence_pattern="monthly",
+                notes=f"Recurring {bucket.frequency}: {bucket.name}"
             )
             events.append(event)
             db.add(event)
 
-        current_date += relativedelta(months=1)
+        current_month += relativedelta(months=1)
 
     await db.commit()
 

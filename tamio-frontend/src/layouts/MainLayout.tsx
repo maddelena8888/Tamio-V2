@@ -9,18 +9,22 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarInset,
+  SidebarTrigger,
+  SidebarRail,
 } from '@/components/ui/sidebar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   LayoutDashboard,
   Users,
   LineChart,
+  Lightbulb,
   Bot,
   Settings,
 } from 'lucide-react';
 
 const navItems = [
   { title: 'Scenarios', url: '/scenarios', icon: LineChart },
+  { title: 'Insights', url: '/insights', icon: Lightbulb },
   { title: 'Clients & Expenses', url: '/clients', icon: Users },
   { title: 'TAMI', url: '/tami', icon: Bot },
 ];
@@ -36,16 +40,20 @@ export default function MainLayout() {
       >
         <SidebarHeader className="p-4">
           <Link to="/" className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-sidebar-primary text-sidebar-primary-foreground rounded-lg flex items-center justify-center font-bold text-lg">
-              T
-            </div>
-            <span className="font-bold text-lg group-data-[collapsible=icon]:hidden">
-              TAMIO
-            </span>
+            <img
+              src="/logo-sidebar-light.svg"
+              alt="Tamio"
+              className="w-10 h-10 hidden group-data-[collapsible=icon]:block"
+            />
+            <img
+              src="/logo-light.svg"
+              alt="Tamio"
+              className="h-6 group-data-[collapsible=icon]:hidden"
+            />
           </Link>
         </SidebarHeader>
 
-        <SidebarContent className="px-2">
+        <SidebarContent className="px-2 pt-1 overflow-visible">
           <SidebarMenu>
             {/* Dashboard link */}
             <SidebarMenuItem>
@@ -110,9 +118,13 @@ export default function MainLayout() {
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarFooter>
+        <SidebarRail />
       </Sidebar>
 
-      <SidebarInset>
+      <SidebarInset className="bg-gradient-ambient min-h-screen">
+        <header className="flex h-14 items-center gap-2 px-4">
+          <SidebarTrigger className="-ml-2" />
+        </header>
         <main className="flex-1 p-6 overflow-auto">
           <Outlet />
         </main>

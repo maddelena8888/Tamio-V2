@@ -65,5 +65,5 @@ export async function addOnboardingExpense(
 }
 
 export async function finishOnboarding(userId: string): Promise<unknown> {
-  return api.post('/data/onboarding/complete', { user_id: userId });
+  return api.post(`/data/onboarding/complete?user_id=${userId}`);
 }

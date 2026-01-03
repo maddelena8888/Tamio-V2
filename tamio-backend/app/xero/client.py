@@ -591,3 +591,426 @@ class XeroClient:
             })
 
         return accounts
+
+    # =========================================================================
+    # WRITE OPERATIONS - Bi-directional Sync (Tamio → Xero)
+    # =========================================================================
+
+    # -------------------------------------------------------------------------
+    # Contacts (Customers & Suppliers)
+    # -------------------------------------------------------------------------
+
+    def create_contact(
+        self,
+        name: str,
+        is_customer: bool = False,
+        is_supplier: bool = False,
+        email: Optional[str] = None,
+        currency: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new contact in Xero.
+
+        Args:
+            name: Contact name (required)
+            is_customer: Mark as customer (for clients/revenue)
+            is_supplier: Mark as supplier (for expenses)
+            email: Optional email address
+            currency: Optional default currency (ISO 4217)
+
+        Returns:
+            Created contact data including contact_id
+        """
+        from xero_python.accounting import Contact, CurrencyCode
+
+        contact = Contact(
+            name=name,
+            is_customer=is_customer,
+            is_supplier=is_supplier,
+        )
+
+        if email:
+            contact.email_address = email
+        if currency:
+            # Convert string currency code to Xero's CurrencyCode enum
+            try:
+                contact.default_currency = CurrencyCode(currency)
+            except ValueError:
+                # If currency is not a valid CurrencyCode, skip setting it
+                pass
+
+        response = self.accounting_api.create_contacts(
+            self.tenant_id,
+            contacts={"contacts": [contact]}
+        )
+
+        created = response.contacts[0] if response.contacts else None
+        if not created:
+            raise Exception("Failed to create contact in Xero")
+
+        return {
+            "contact_id": created.contact_id,
+            "name": created.name,
+            "is_customer": created.is_customer,
+            "is_supplier": created.is_supplier,
+            "email": created.email_address,
+            "default_currency": str(created.default_currency) if created.default_currency else None,
+        }
+
+    def update_contact(
+        self,
+        contact_id: str,
+        name: Optional[str] = None,
+        email: Optional[str] = None,
+        is_customer: Optional[bool] = None,
+        is_supplier: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update an existing contact in Xero.
+
+        Args:
+            contact_id: Xero contact UUID
+            name: Updated name
+            email: Updated email
+            is_customer: Update customer flag
+            is_supplier: Update supplier flag
+
+        Returns:
+            Updated contact data
+        """
+        from xero_python.accounting import Contact
+
+        contact = Contact(contact_id=contact_id)
+
+        if name is not None:
+            contact.name = name
+        if email is not None:
+            contact.email_address = email
+        if is_customer is not None:
+            contact.is_customer = is_customer
+        if is_supplier is not None:
+            contact.is_supplier = is_supplier
+
+        response = self.accounting_api.update_contact(
+            self.tenant_id,
+            contact_id=contact_id,
+            contacts={"contacts": [contact]}
+        )
+
+        updated = response.contacts[0] if response.contacts else None
+        if not updated:
+            raise Exception(f"Failed to update contact {contact_id} in Xero")
+
+        return {
+            "contact_id": updated.contact_id,
+            "name": updated.name,
+            "is_customer": updated.is_customer,
+            "is_supplier": updated.is_supplier,
+            "email": updated.email_address,
+        }
+
+    def archive_contact(self, contact_id: str) -> Dict[str, Any]:
+        """
+        Archive a contact in Xero (soft delete).
+
+        Note: Xero doesn't allow deleting contacts with transactions.
+        Archiving hides them from active lists but preserves history.
+        """
+        from xero_python.accounting import Contact
+
+        contact = Contact(
+            contact_id=contact_id,
+            contact_status="ARCHIVED"
+        )
+
+        response = self.accounting_api.update_contact(
+            self.tenant_id,
+            contact_id=contact_id,
+            contacts={"contacts": [contact]}
+        )
+
+        return {"contact_id": contact_id, "status": "archived"}
+
+    # -------------------------------------------------------------------------
+    # Invoices (for Clients - Accounts Receivable)
+    # -------------------------------------------------------------------------
+
+    def create_invoice(
+        self,
+        contact_id: str,
+        line_items: List[Dict[str, Any]],
+        due_date: Optional[datetime] = None,
+        reference: Optional[str] = None,
+        status: str = "DRAFT",
+    ) -> Dict[str, Any]:
+        """
+        Create an invoice (Accounts Receivable) in Xero.
+
+        Args:
+            contact_id: Xero contact UUID
+            line_items: List of {"description": str, "quantity": float, "unit_amount": float, "account_code": str}
+            due_date: Optional due date
+            reference: Optional reference number
+            status: DRAFT, SUBMITTED, or AUTHORISED
+
+        Returns:
+            Created invoice data including invoice_id
+        """
+        from xero_python.accounting import Invoice, LineItem, Contact
+
+        xero_line_items = []
+        for item in line_items:
+            li = LineItem(
+                description=item.get("description", ""),
+                quantity=item.get("quantity", 1),
+                unit_amount=item.get("unit_amount", 0),
+                account_code=item.get("account_code", "200"),  # Default to Sales account
+            )
+            xero_line_items.append(li)
+
+        invoice = Invoice(
+            type="ACCREC",  # Accounts Receivable
+            contact=Contact(contact_id=contact_id),
+            line_items=xero_line_items,
+            status=status,
+        )
+
+        if due_date:
+            invoice.due_date = due_date
+        if reference:
+            invoice.reference = reference
+
+        response = self.accounting_api.create_invoices(
+            self.tenant_id,
+            invoices={"invoices": [invoice]}
+        )
+
+        created = response.invoices[0] if response.invoices else None
+        if not created:
+            raise Exception("Failed to create invoice in Xero")
+
+        return {
+            "invoice_id": created.invoice_id,
+            "invoice_number": created.invoice_number,
+            "contact_id": contact_id,
+            "total": float(created.total or 0),
+            "status": str(created.status),
+            "due_date": created.due_date,
+        }
+
+    # -------------------------------------------------------------------------
+    # Bills (for Expenses - Accounts Payable)
+    # -------------------------------------------------------------------------
+
+    def create_bill(
+        self,
+        contact_id: str,
+        line_items: List[Dict[str, Any]],
+        due_date: Optional[datetime] = None,
+        reference: Optional[str] = None,
+        status: str = "DRAFT",
+    ) -> Dict[str, Any]:
+        """
+        Create a bill (Accounts Payable) in Xero.
+
+        Args:
+            contact_id: Xero supplier contact UUID
+            line_items: List of {"description": str, "quantity": float, "unit_amount": float, "account_code": str}
+            due_date: Optional due date
+            reference: Optional reference/PO number
+            status: DRAFT, SUBMITTED, or AUTHORISED
+
+        Returns:
+            Created bill data including invoice_id (bills use Invoice type in Xero)
+        """
+        from xero_python.accounting import Invoice, LineItem, Contact
+
+        xero_line_items = []
+        for item in line_items:
+            li = LineItem(
+                description=item.get("description", ""),
+                quantity=item.get("quantity", 1),
+                unit_amount=item.get("unit_amount", 0),
+                account_code=item.get("account_code", "400"),  # Default to General Expenses
+            )
+            xero_line_items.append(li)
+
+        bill = Invoice(
+            type="ACCPAY",  # Accounts Payable (Bill)
+            contact=Contact(contact_id=contact_id),
+            line_items=xero_line_items,
+            status=status,
+        )
+
+        if due_date:
+            bill.due_date = due_date
+        if reference:
+            bill.reference = reference
+
+        response = self.accounting_api.create_invoices(
+            self.tenant_id,
+            invoices={"invoices": [bill]}
+        )
+
+        created = response.invoices[0] if response.invoices else None
+        if not created:
+            raise Exception("Failed to create bill in Xero")
+
+        return {
+            "bill_id": created.invoice_id,
+            "bill_number": created.invoice_number,
+            "contact_id": contact_id,
+            "total": float(created.total or 0),
+            "status": str(created.status),
+            "due_date": created.due_date,
+        }
+
+    # -------------------------------------------------------------------------
+    # Repeating Invoices (for Retainer Clients)
+    # -------------------------------------------------------------------------
+
+    def create_repeating_invoice(
+        self,
+        contact_id: str,
+        line_items: List[Dict[str, Any]],
+        schedule_unit: str = "MONTHLY",
+        schedule_period: int = 1,
+        start_date: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a repeating invoice for recurring revenue (retainers).
+
+        Args:
+            contact_id: Xero contact UUID
+            line_items: List of line items
+            schedule_unit: WEEKLY, MONTHLY, YEARLY
+            schedule_period: How often (1 = every month, 2 = every 2 months, etc.)
+            start_date: When to start the schedule
+
+        Returns:
+            Created repeating invoice data
+        """
+        from xero_python.accounting import RepeatingInvoice, LineItem, Contact, Schedule
+
+        xero_line_items = []
+        for item in line_items:
+            li = LineItem(
+                description=item.get("description", ""),
+                quantity=item.get("quantity", 1),
+                unit_amount=item.get("unit_amount", 0),
+                account_code=item.get("account_code", "200"),
+            )
+            xero_line_items.append(li)
+
+        schedule = Schedule(
+            unit=schedule_unit,
+            period=schedule_period,
+            due_date_type="DAYSAFTERBILLDATE",
+            due_date=30,  # Net 30
+        )
+
+        if start_date:
+            schedule.start_date = start_date
+
+        repeating_invoice = RepeatingInvoice(
+            type="ACCREC",
+            contact=Contact(contact_id=contact_id),
+            line_items=xero_line_items,
+            schedule=schedule,
+            status="DRAFT",
+        )
+
+        response = self.accounting_api.create_repeating_invoices(
+            self.tenant_id,
+            repeating_invoices={"repeating_invoices": [repeating_invoice]}
+        )
+
+        created = response.repeating_invoices[0] if response.repeating_invoices else None
+        if not created:
+            raise Exception("Failed to create repeating invoice in Xero")
+
+        return {
+            "repeating_invoice_id": created.repeating_invoice_id,
+            "contact_id": contact_id,
+            "total": float(created.total or 0),
+            "status": str(created.status),
+            "schedule": {
+                "unit": schedule_unit,
+                "period": schedule_period,
+            }
+        }
+
+    # -------------------------------------------------------------------------
+    # Repeating Bills (for Recurring Expenses)
+    # -------------------------------------------------------------------------
+
+    def create_repeating_bill(
+        self,
+        contact_id: str,
+        line_items: List[Dict[str, Any]],
+        schedule_unit: str = "MONTHLY",
+        schedule_period: int = 1,
+        start_date: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a repeating bill for recurring expenses.
+
+        Args:
+            contact_id: Xero supplier contact UUID
+            line_items: List of line items
+            schedule_unit: WEEKLY, MONTHLY, YEARLY
+            schedule_period: How often
+            start_date: When to start
+
+        Returns:
+            Created repeating bill data
+        """
+        from xero_python.accounting import RepeatingInvoice, LineItem, Contact, Schedule
+
+        xero_line_items = []
+        for item in line_items:
+            li = LineItem(
+                description=item.get("description", ""),
+                quantity=item.get("quantity", 1),
+                unit_amount=item.get("unit_amount", 0),
+                account_code=item.get("account_code", "400"),
+            )
+            xero_line_items.append(li)
+
+        schedule = Schedule(
+            unit=schedule_unit,
+            period=schedule_period,
+            due_date_type="DAYSAFTERBILLDATE",
+            due_date=30,
+        )
+
+        if start_date:
+            schedule.start_date = start_date
+
+        repeating_bill = RepeatingInvoice(
+            type="ACCPAY",  # Accounts Payable
+            contact=Contact(contact_id=contact_id),
+            line_items=xero_line_items,
+            schedule=schedule,
+            status="DRAFT",
+        )
+
+        response = self.accounting_api.create_repeating_invoices(
+            self.tenant_id,
+            repeating_invoices={"repeating_invoices": [repeating_bill]}
+        )
+
+        created = response.repeating_invoices[0] if response.repeating_invoices else None
+        if not created:
+            raise Exception("Failed to create repeating bill in Xero")
+
+        return {
+            "repeating_bill_id": created.repeating_invoice_id,
+            "contact_id": contact_id,
+            "total": float(created.total or 0),
+            "status": str(created.status),
+            "schedule": {
+                "unit": schedule_unit,
+                "period": schedule_period,
+            }
+        }

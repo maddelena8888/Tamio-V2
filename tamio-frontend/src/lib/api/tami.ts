@@ -2,11 +2,93 @@
 // TAMI Chat API - Following exact contract from specification
 // ============================================================================
 
-import api from './client';
-import type { ChatRequest, ChatResponse, ChatMessage } from './types';
+import api, { getAccessToken } from './client';
+import type { ChatRequest, ChatResponse, ChatMessage, ChatMode, UIHints } from './types';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
 /**
- * Send a message to TAMI chat
+ * Stream event types from the server
+ */
+export interface StreamEvent {
+  type: 'chunk' | 'done' | 'error';
+  content?: string;
+  mode?: ChatMode;
+  ui_hints?: UIHints;
+  context_summary?: Record<string, unknown>;
+  error?: string;
+}
+
+/**
+ * Send a message to TAMI chat with streaming response
+ *
+ * This provides much lower perceived latency as the user sees
+ * the response appear character by character.
+ */
+export async function sendChatMessageStreaming(
+  request: ChatRequest,
+  onChunk: (content: string) => void,
+  onDone: (event: StreamEvent) => void,
+  onError: (error: string) => void
+): Promise<void> {
+  const token = getAccessToken();
+
+  const response = await fetch(`${API_BASE_URL}/tami/chat/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    onError(error.detail || 'Failed to connect to TAMI');
+    return;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    onError('No response body');
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Process complete SSE messages
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const event: StreamEvent = JSON.parse(line.slice(6));
+
+          if (event.type === 'chunk' && event.content) {
+            onChunk(event.content);
+          } else if (event.type === 'done') {
+            onDone(event);
+          } else if (event.type === 'error') {
+            onError(event.error || 'Unknown error');
+          }
+        } catch {
+          // Ignore parse errors for incomplete messages
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Send a message to TAMI chat (non-streaming)
  *
  * IMPORTANT: Follow the contract exactly:
  * - Response contains message_markdown, mode, and ui_hints

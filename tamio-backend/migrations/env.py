@@ -11,8 +11,13 @@ from app.database import Base
 from app.config import settings
 
 # Import all models to ensure they're registered with Base
-from app.data.models import User, CashAccount, Client, ExpenseBucket, CashEvent
+from app.data.models import (
+    User, CashAccount, Client, ExpenseBucket, CashEvent,
+    ObligationAgreement, ObligationSchedule, PaymentEvent
+)
 from app.xero.models import XeroConnection, XeroSyncLog
+from app.scenarios.models import Scenario, ScenarioEvent
+from app.tami.models import ConversationSession, ConversationMessage, UserActivity
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

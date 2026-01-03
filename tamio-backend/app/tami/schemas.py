@@ -162,6 +162,51 @@ class ActiveScenarioSummary(BaseModel):
     layers: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class CurrentScenarioContext(BaseModel):
+    """Detailed context for the currently active scenario being viewed."""
+    scenario_id: str
+    name: str
+    scenario_type: str
+    status: str
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    scope_config: Dict[str, Any] = Field(default_factory=dict)
+    # Forecast impact
+    impact_week_13: Optional[str] = None
+    scenario_ending_balance: Optional[str] = None
+    base_ending_balance: Optional[str] = None
+    # Rule evaluation on scenario
+    is_buffer_safe: bool = True
+    rule_breaches: List[Dict[str, Any]] = Field(default_factory=list)
+    # Week-by-week comparison
+    weekly_deltas: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class TriggeredScenarioSummary(BaseModel):
+    """Summary of a triggered scenario for TAMI context."""
+    id: str
+    trigger_name: str
+    scenario_type: str
+    severity: str
+    status: str
+    estimated_impact: Optional[Dict[str, Any]] = None
+    recommended_actions: List[str] = Field(default_factory=list)
+
+
+class BehaviorInsightsSummary(BaseModel):
+    """Summary of behavior insights for TAMI context."""
+    health_score: int = Field(description="Overall health score 0-100")
+    health_label: str = Field(description="Health label: Healthy, At Risk, Critical")
+
+    # Key behavior flags
+    client_concentration_risk: bool = False
+    payment_reliability_warning: bool = False
+    expense_volatility_warning: bool = False
+    buffer_integrity_breached: bool = False
+
+    # Top concerns
+    top_concerns: List[str] = Field(default_factory=list)
+
+
 class ContextPayload(BaseModel):
     """Deterministic context injected into Agent2."""
     # User info
@@ -182,6 +227,9 @@ class ContextPayload(BaseModel):
     # Active scenarios
     active_scenarios: List[ActiveScenarioSummary] = Field(default_factory=list)
 
+    # Currently viewed scenario (detailed context)
+    current_scenario: Optional[CurrentScenarioContext] = None
+
     # Key metrics
     runway_weeks: int
     lowest_cash_week: int
@@ -190,6 +238,10 @@ class ContextPayload(BaseModel):
     # Clients and expenses summary
     clients_summary: List[Dict[str, Any]] = Field(default_factory=list)
     expenses_summary: List[Dict[str, Any]] = Field(default_factory=list)
+
+    # Behavior insights and triggered scenarios (Phase 4 integration)
+    behavior_insights: Optional[BehaviorInsightsSummary] = None
+    triggered_scenarios: List[TriggeredScenarioSummary] = Field(default_factory=list)
 
     # Timestamp
     generated_at: str

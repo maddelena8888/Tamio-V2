@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 
 from app.database import get_db
 from app.data import models
-from app.data.obligation_schemas import (
+from app.data.obligations.schemas import (
     ObligationAgreementCreate,
     ObligationAgreementUpdate,
     ObligationAgreementResponse,

@@ -51,3 +51,19 @@ export function getStoredUser(): User | null {
 export function isAuthenticated(): boolean {
   return !!localStorage.getItem('tamio_token');
 }
+
+// Password reset functions
+export interface ForgotPasswordResponse {
+  message: string;
+}
+
+export async function forgotPassword(email: string): Promise<ForgotPasswordResponse> {
+  return api.post<ForgotPasswordResponse>('/auth/forgot-password', { email });
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<ForgotPasswordResponse> {
+  return api.post<ForgotPasswordResponse>('/auth/reset-password', {
+    token,
+    new_password: newPassword,
+  });
+}

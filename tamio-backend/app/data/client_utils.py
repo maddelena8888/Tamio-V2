@@ -206,6 +206,9 @@ def update_client_billing_from_repeating_invoice(
 
     client.billing_config = billing_config
 
+    # Also set the direct field on the model for UI badge display
+    client.xero_repeating_invoice_id = repeating_invoice.get("repeating_invoice_id")
+
     return client
 
 

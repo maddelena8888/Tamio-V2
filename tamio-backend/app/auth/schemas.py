@@ -18,6 +18,7 @@ class UserAuthInfo(BaseModel):
     """User info returned after auth."""
     id: str
     email: str
+    company_name: str | None = None
     base_currency: str
     has_completed_onboarding: bool
 
@@ -29,3 +30,19 @@ class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserAuthInfo
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Schema for forgot password request."""
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Schema for forgot password response."""
+    message: str
+
+
+class ResetPasswordRequest(BaseModel):
+    """Schema for reset password request."""
+    token: str
+    new_password: str = Field(..., min_length=8, description="Password must be at least 8 characters")

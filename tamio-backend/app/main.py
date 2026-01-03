@@ -4,12 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.auth import routes as auth_routes
 from app.data import routes as data_routes
-from app.data import obligation_routes
+from app.data.obligations import routes as obligation_routes
 from app.forecast import routes as forecast_routes
 from app.scenarios import routes as scenario_routes
 from app.scenarios.pipeline import routes as pipeline_routes
 from app.tami import routes as tami_routes
 from app.xero import routes as xero_routes
+from app.quickbooks import routes as quickbooks_routes
+from app.insights import routes as insights_routes
+from app.behavior import routes as behavior_routes
 
 # Create FastAPI app
 app = FastAPI(
@@ -36,6 +39,9 @@ app.include_router(scenario_routes.router, prefix=f"{settings.API_V1_PREFIX}/sce
 app.include_router(pipeline_routes.router, prefix=f"{settings.API_V1_PREFIX}/scenarios", tags=["Scenario Pipeline"])
 app.include_router(tami_routes.router, prefix=f"{settings.API_V1_PREFIX}/tami", tags=["TAMI"])
 app.include_router(xero_routes.router, prefix=f"{settings.API_V1_PREFIX}/xero", tags=["Xero"])
+app.include_router(quickbooks_routes.router, prefix=f"{settings.API_V1_PREFIX}/quickbooks", tags=["QuickBooks"])
+app.include_router(insights_routes.router, prefix=f"{settings.API_V1_PREFIX}/insights", tags=["Insights"])
+app.include_router(behavior_routes.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Behavior"])
 
 
 @app.get("/")

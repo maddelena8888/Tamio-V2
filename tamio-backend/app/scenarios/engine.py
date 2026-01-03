@@ -23,37 +23,43 @@ async def build_scenario_layer(
     """
     scenario_events = []
 
-    if scenario.scenario_type == models.ScenarioType.PAYMENT_DELAY:
+    # Normalize scenario type - handle both enum values and string values
+    scenario_type = scenario.scenario_type
+    if hasattr(scenario_type, 'value'):
+        scenario_type = scenario_type.value
+
+    # payment_delay_in is an alias for payment_delay
+    if scenario_type in ("payment_delay", "payment_delay_in"):
         scenario_events = await _build_payment_delay(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.CLIENT_LOSS:
+    elif scenario_type == "client_loss":
         scenario_events = await _build_client_loss(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.CLIENT_GAIN:
+    elif scenario_type == "client_gain":
         scenario_events = await _build_client_gain(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.CLIENT_CHANGE:
+    elif scenario_type == "client_change":
         scenario_events = await _build_client_change(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.HIRING:
+    elif scenario_type == "hiring":
         scenario_events = await _build_hiring(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.FIRING:
+    elif scenario_type == "firing":
         scenario_events = await _build_firing(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.CONTRACTOR_GAIN:
+    elif scenario_type == "contractor_gain":
         scenario_events = await _build_contractor_gain(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.CONTRACTOR_LOSS:
+    elif scenario_type == "contractor_loss":
         scenario_events = await _build_contractor_loss(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.INCREASED_EXPENSE:
+    elif scenario_type == "increased_expense":
         scenario_events = await _build_expense_increase(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.DECREASED_EXPENSE:
+    elif scenario_type == "decreased_expense":
         scenario_events = await _build_expense_decrease(db, scenario)
 
-    elif scenario.scenario_type == models.ScenarioType.PAYMENT_DELAY_OUT:
+    elif scenario_type == "payment_delay_out":
         scenario_events = await _build_payment_delay_out(db, scenario)
 
     return scenario_events
@@ -122,10 +128,23 @@ async def _build_payment_delay(
     params = scenario.parameters
     scope = scenario.scope_config
 
-    delay_weeks = params.get("delay_weeks") or 0
-    if isinstance(delay_weeks, str):
-        delay_weeks = int(delay_weeks) if delay_weeks else 0
-    delay_weeks = int(delay_weeks) if delay_weeks else 0
+    # Support both delay_weeks and delay_days parameters
+    delay_weeks = params.get("delay_weeks")
+    delay_days = params.get("delay_days")
+
+    if delay_weeks:
+        if isinstance(delay_weeks, str):
+            delay_weeks = int(delay_weeks) if delay_weeks else 0
+        delay_weeks = int(delay_weeks)
+    elif delay_days:
+        if isinstance(delay_days, str):
+            delay_days = int(delay_days) if delay_days else 0
+        delay_days = int(delay_days)
+        # Convert days to weeks (round up to ensure delay is applied)
+        delay_weeks = max(1, (delay_days + 6) // 7)  # Round up: 10 days -> 2 weeks
+    else:
+        delay_weeks = 0
+
     partial_pct = params.get("partial_payment_pct")
     event_ids = params.get("event_ids", [])
 
@@ -190,11 +209,19 @@ async def _build_client_loss(
 ) -> List[models.ScenarioEvent]:
     """Build client loss scenario."""
     scenario_events = []
-    params = scenario.parameters
-    scope = scenario.scope_config
+    params = scenario.parameters or {}
+    scope = scenario.scope_config or {}
 
     client_id = scope.get("client_id")
-    effective_date = date.fromisoformat(params.get("effective_date"))
+    if not client_id:
+        return scenario_events  # Cannot build without client_id
+
+    # Handle effective_date with fallback
+    effective_date_str = params.get("effective_date")
+    if effective_date_str:
+        effective_date = date.fromisoformat(effective_date_str)
+    else:
+        effective_date = date.today()
 
     # Get all future cash events for this client
     result = await db.execute(
@@ -702,14 +729,70 @@ async def _build_payment_delay_out(
     """Build outgoing payment delay scenario."""
     scenario_events = []
     params = scenario.parameters
+    scope = scenario.scope_config or {}
 
-    delay_weeks = params.get("delay_weeks") or 2
-    if isinstance(delay_weeks, str):
-        delay_weeks = int(delay_weeks) if delay_weeks else 2
-    delay_weeks = int(delay_weeks) if delay_weeks else 2
+    # Support both delay_weeks and delay_days parameters
+    delay_weeks = params.get("delay_weeks")
+    delay_days = params.get("delay_days")
+
+    if delay_weeks:
+        if isinstance(delay_weeks, str):
+            delay_weeks = int(delay_weeks) if delay_weeks else 2
+        delay_weeks = int(delay_weeks)
+    elif delay_days:
+        if isinstance(delay_days, str):
+            delay_days = int(delay_days) if delay_days else 0
+        delay_days = int(delay_days)
+        # Convert days to weeks (round up to ensure delay is applied)
+        delay_weeks = max(1, (delay_days + 6) // 7)  # Round up: 10 days -> 2 weeks
+    else:
+        delay_weeks = 2  # Default to 2 weeks
 
     event_ids = params.get("event_ids", [])
     amount = Decimal(str(params.get("amount") or 0))
+    bucket_id = scope.get("bucket_id") or params.get("bucket_id")
+
+    # If bucket_id provided, find all future outgoing events for that expense bucket
+    if not event_ids and bucket_id:
+        result = await db.execute(
+            select(CashEvent).where(
+                CashEvent.bucket_id == bucket_id,
+                CashEvent.date >= date.today(),
+                CashEvent.direction == "out"
+            ).order_by(CashEvent.date)
+        )
+        events = result.scalars().all()
+
+        for event in events:
+            # Shift payment date forward
+            new_date = event.date + timedelta(weeks=delay_weeks)
+
+            modified_event_data = {
+                "id": event.id,
+                "user_id": event.user_id,
+                "date": str(new_date),
+                "amount": str(event.amount),
+                "direction": event.direction,
+                "event_type": event.event_type,
+                "category": event.category,
+                "confidence": event.confidence,
+                "confidence_reason": f"payment_delayed_{delay_weeks}w_out",
+                "is_recurring": event.is_recurring,
+                "recurrence_pattern": event.recurrence_pattern,
+                "bucket_id": event.bucket_id,
+            }
+
+            scenario_event = models.ScenarioEvent(
+                scenario_id=scenario.id,
+                original_event_id=event.id,
+                operation="modify",
+                event_data=modified_event_data,
+                layer_attribution=scenario.name,
+                change_reason=f"Vendor payment delayed by {delay_weeks} weeks"
+            )
+            scenario_events.append(scenario_event)
+
+        return scenario_events
 
     # If no specific events provided but amount given, create synthetic delay effect
     if not event_ids and amount > 0:

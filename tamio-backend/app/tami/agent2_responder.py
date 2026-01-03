@@ -6,7 +6,7 @@ This agent receives the compiled prompt from Agent1 and:
 3. Returns a structured response in the required format
 """
 import json
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, AsyncIterator
 from openai import AsyncOpenAI
 
 from app.config import settings
@@ -17,6 +17,51 @@ from app.tami.schemas import TAMIResponse, TAMIMode, UIHints, SuggestedAction
 def get_openai_client() -> AsyncOpenAI:
     """Get the OpenAI client."""
     return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+
+async def call_openai_streaming(
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    use_fast_model: bool = False,
+) -> AsyncIterator[str]:
+    """
+    Call OpenAI API with streaming enabled.
+
+    Yields chunks of the response as they arrive.
+    Note: When streaming, we don't use JSON response format to allow
+    natural text streaming. The final response is parsed separately.
+
+    Args:
+        messages: The conversation messages
+        tools: Available tools for function calling
+        use_fast_model: If True, use gpt-4o-mini for faster responses
+    """
+    client = get_openai_client()
+
+    # Select model based on complexity
+    model = settings.OPENAI_MODEL_FAST if use_fast_model else settings.OPENAI_MODEL
+
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": settings.OPENAI_MAX_TOKENS,
+        "stream": True,
+    }
+
+    # Only add tools for complex queries (fast model doesn't need them)
+    if tools and not use_fast_model:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    try:
+        stream = await client.chat.completions.create(**kwargs)
+
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    except Exception as e:
+        yield f"Error: {str(e)}"
 
 
 async def call_openai(

@@ -4,10 +4,13 @@ import MainLayout from '@/layouts/MainLayout';
 import Dashboard from '@/pages/Dashboard';
 import ClientsExpenses from '@/pages/ClientsExpenses';
 import Scenarios from '@/pages/Scenarios';
+import Insights from '@/pages/Insights';
 import Tami from '@/pages/Tami';
 import Settings from '@/pages/Settings';
 import Login from '@/pages/Login';
 import Signup from '@/pages/Signup';
+import ForgotPassword from '@/pages/ForgotPassword';
+import ResetPassword from '@/pages/ResetPassword';
 import Onboarding from '@/pages/Onboarding';
 import OnboardingManual from '@/pages/OnboardingManual';
 
@@ -100,6 +103,8 @@ export const router = createBrowserRouter([
     children: [
       { path: '/login', element: <Login /> },
       { path: '/signup', element: <Signup /> },
+      { path: '/forgot-password', element: <ForgotPassword /> },
+      { path: '/reset-password', element: <ResetPassword /> },
     ],
   },
   // Onboarding routes
@@ -121,6 +126,7 @@ export const router = createBrowserRouter([
           { index: true, element: <Dashboard /> },
           { path: 'clients', element: <ClientsExpenses /> },
           { path: 'scenarios', element: <Scenarios /> },
+          { path: 'insights', element: <Insights /> },
           { path: 'tami', element: <Tami /> },
           { path: 'settings', element: <Settings /> },
         ],

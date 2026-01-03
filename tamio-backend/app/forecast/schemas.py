@@ -1,7 +1,6 @@
 """Forecast response schemas."""
 from pydantic import BaseModel
-from typing import List
-from decimal import Decimal
+from typing import List, Optional
 
 
 class ForecastEventSummary(BaseModel):
@@ -13,6 +12,22 @@ class ForecastEventSummary(BaseModel):
     event_type: str
     category: str | None
     confidence: str
+    confidence_reason: Optional[str] = None
+    source_name: Optional[str] = None
+    source_type: Optional[str] = None
+
+
+class ConfidenceBreakdown(BaseModel):
+    """Confidence breakdown for cash in/out."""
+    high: str
+    medium: str
+    low: str
+
+
+class WeekConfidenceBreakdown(BaseModel):
+    """Weekly confidence breakdown."""
+    cash_in: ConfidenceBreakdown
+    cash_out: ConfidenceBreakdown
 
 
 class WeekForecast(BaseModel):
@@ -26,6 +41,7 @@ class WeekForecast(BaseModel):
     net_change: str
     ending_balance: str
     events: List[ForecastEventSummary]
+    confidence_breakdown: Optional[WeekConfidenceBreakdown] = None
 
 
 class ForecastSummary(BaseModel):
@@ -37,8 +53,37 @@ class ForecastSummary(BaseModel):
     runway_weeks: int
 
 
+class ConfidenceCountBreakdown(BaseModel):
+    """Detailed confidence breakdown with counts and amounts."""
+    high_confidence_count: int
+    medium_confidence_count: int
+    low_confidence_count: int
+    high_confidence_amount: str
+    medium_confidence_amount: str
+    low_confidence_amount: str
+
+
+class ForecastConfidence(BaseModel):
+    """Overall forecast confidence metrics."""
+    overall_score: str
+    overall_level: str  # "high" | "medium" | "low"
+    overall_percentage: int
+    breakdown: ConfidenceCountBreakdown
+    improvement_suggestions: List[str]
+
+
 class ForecastResponse(BaseModel):
     """Complete 13-week forecast response."""
+    starting_cash: str
+    forecast_start_date: str
+    weeks: List[WeekForecast]
+    summary: ForecastSummary
+    confidence: Optional[ForecastConfidence] = None
+
+
+# Legacy support - V1 response without confidence
+class ForecastResponseV1(BaseModel):
+    """Legacy forecast response (V1 - without confidence)."""
     starting_cash: str
     forecast_start_date: str
     weeks: List[WeekForecast]

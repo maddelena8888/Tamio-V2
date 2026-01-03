@@ -31,6 +31,7 @@ class ScenarioType(str, enum.Enum):
     """Scenario types for what-if modeling."""
     # Cash In scenarios
     PAYMENT_DELAY = "payment_delay"
+    PAYMENT_DELAY_IN = "payment_delay_in"  # Alias for frontend compatibility
     CLIENT_LOSS = "client_loss"
     CLIENT_GAIN = "client_gain"
     CLIENT_CHANGE = "client_change"
@@ -49,6 +50,7 @@ class ScenarioStatus(str, enum.Enum):
     """Scenario lifecycle status."""
     DRAFT = "draft"              # Being built
     ACTIVE = "active"            # Ready for evaluation
+    SAVED = "saved"              # Saved for future reference
     CONFIRMED = "confirmed"      # Committed to reality
     DISCARDED = "discarded"      # Rejected/archived
 

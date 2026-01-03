@@ -1,6 +1,7 @@
 """Authentication utilities - password hashing and JWT handling."""
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import secrets
 from jose import JWTError, jwt
 import bcrypt
 from app.config import settings
@@ -8,6 +9,7 @@ from app.config import settings
 # JWT settings
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 7  # 7-day token lifetime
+PASSWORD_RESET_EXPIRE_HOURS = 1  # Reset token valid for 1 hour
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -49,3 +51,13 @@ def decode_access_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def generate_password_reset_token() -> str:
+    """Generate a secure random token for password reset."""
+    return secrets.token_urlsafe(32)
+
+
+def get_password_reset_expiry() -> datetime:
+    """Get the expiry datetime for a password reset token."""
+    return datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)

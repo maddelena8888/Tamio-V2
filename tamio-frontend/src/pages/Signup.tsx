@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { NeuroCard, NeuroCardContent, NeuroCardDescription, NeuroCardHeader, NeuroCardTitle } from '@/components/ui/neuro-card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2 } from 'lucide-react';
 
@@ -45,7 +45,7 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+    <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
@@ -53,14 +53,14 @@ export default function Signup() {
           <p className="text-muted-foreground mt-2">Decision-safety for founders</p>
         </div>
 
-        <Card>
-          <CardHeader className="space-y-1">
-            <CardTitle className="text-2xl">Create an account</CardTitle>
-            <CardDescription>
+        <NeuroCard>
+          <NeuroCardHeader className="space-y-1">
+            <NeuroCardTitle className="text-2xl">Create an account</NeuroCardTitle>
+            <NeuroCardDescription>
               Start managing your cash flow with confidence
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+            </NeuroCardDescription>
+          </NeuroCardHeader>
+          <NeuroCardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
               {error && (
                 <Alert variant="destructive">
@@ -134,8 +134,8 @@ export default function Signup() {
                 Sign in
               </Link>
             </div>
-          </CardContent>
-        </Card>
+          </NeuroCardContent>
+        </NeuroCard>
       </div>
     </div>
   );

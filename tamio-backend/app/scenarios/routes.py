@@ -105,23 +105,27 @@ async def create_scenario(
     db: AsyncSession = Depends(get_db)
 ):
     """Create a new scenario."""
-    scenario = models.Scenario(
-        user_id=data.user_id,
-        name=data.name,
-        description=data.description,
-        scenario_type=data.scenario_type.value if hasattr(data.scenario_type, 'value') else data.scenario_type,
-        entry_path=data.entry_path,
-        suggested_reason=data.suggested_reason,
-        scope_config=data.scope_config,
-        parameters=data.parameters,
-        parent_scenario_id=data.parent_scenario_id,
-        layer_order=data.layer_order,
-        status="draft"
-    )
-    db.add(scenario)
-    await db.commit()
-    await db.refresh(scenario)
-    return scenario
+    try:
+        scenario = models.Scenario(
+            user_id=data.user_id,
+            name=data.name,
+            description=data.description,
+            scenario_type=data.scenario_type.value if hasattr(data.scenario_type, 'value') else data.scenario_type,
+            entry_path=data.entry_path,
+            suggested_reason=data.suggested_reason,
+            scope_config=data.scope_config,
+            parameters=data.parameters,
+            parent_scenario_id=data.parent_scenario_id,
+            layer_order=data.layer_order,
+            status="draft"
+        )
+        db.add(scenario)
+        await db.commit()
+        await db.refresh(scenario)
+        return scenario
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to create scenario: {str(e)}")
 
 
 @router.get("/scenarios", response_model=List[schemas.ScenarioResponse])
@@ -138,6 +142,30 @@ async def get_scenarios(
 
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.get("/scenarios/suggest")
+async def get_suggested_scenarios(
+    user_id: str = Query(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get Tamio-suggested scenarios based on current forecast."""
+    # Get base forecast
+    base_forecast = await calculate_13_week_forecast(db, user_id)
+
+    # Evaluate rules on base forecast
+    evaluations = await evaluate_rules(db, user_id, base_forecast)
+
+    # Generate suggestions
+    suggestions = await suggest_scenarios(db, user_id, base_forecast, evaluations)
+
+    return {
+        "suggestions": suggestions,
+        "based_on": {
+            "runway_weeks": base_forecast.get("summary", {}).get("runway_weeks"),
+            "has_rule_breaches": any(e.is_breached for e in evaluations)
+        }
+    }
 
 
 @router.get("/scenarios/{scenario_id}", response_model=schemas.ScenarioResponse)
@@ -387,30 +415,6 @@ async def get_scenario_forecast(
         "rule_evaluations": evaluations,
         "decision_signals": {"signals": decision_signals_list},
         "suggested_scenarios": suggested_scenarios
-    }
-
-
-@router.get("/scenarios/suggest")
-async def get_suggested_scenarios(
-    user_id: str = Query(...),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get Tamio-suggested scenarios based on current forecast."""
-    # Get base forecast
-    base_forecast = await calculate_13_week_forecast(db, user_id)
-
-    # Evaluate rules on base forecast
-    evaluations = await evaluate_rules(db, user_id, base_forecast)
-
-    # Generate suggestions
-    suggestions = await suggest_scenarios(db, user_id, base_forecast, evaluations)
-
-    return {
-        "suggestions": suggestions,
-        "based_on": {
-            "runway_weeks": base_forecast.get("summary", {}).get("runway_weeks"),
-            "has_rule_breaches": any(e.is_breached for e in evaluations)
-        }
     }
 
 

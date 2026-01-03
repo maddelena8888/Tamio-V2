@@ -1,0 +1,1 @@
+"""TAMI module tests."""

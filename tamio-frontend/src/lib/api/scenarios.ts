@@ -105,7 +105,7 @@ export async function getScenarioSuggestions(userId: string): Promise<{
     has_rule_breaches: boolean;
   };
 }> {
-  return api.get('/scenarios/suggest', { user_id: userId });
+  return api.get('/scenarios/scenarios/suggest', { user_id: userId });
 }
 
 export async function evaluateBaseRules(userId: string): Promise<{

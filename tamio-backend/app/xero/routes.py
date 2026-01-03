@@ -172,6 +172,26 @@ async def xero_callback(
 
         await db.commit()
 
+        # Auto-sync data after successful connection
+        try:
+            await sync_xero_data(db=db, user_id=user_id, sync_type="full")
+        except Exception as sync_err:
+            # Log but don't fail - user can manually sync later
+            print(f"Auto-sync failed after Xero connection: {sync_err}")
+
+        # Mark onboarding as complete
+        try:
+            from app.data import models
+            user_result = await db.execute(
+                select(models.User).where(models.User.id == user_id)
+            )
+            user = user_result.scalar_one_or_none()
+            if user:
+                user.has_completed_onboarding = True
+                await db.commit()
+        except Exception:
+            pass
+
         # Redirect to frontend with success
         frontend_url = f"{settings.FRONTEND_URL}?xero_connected=true&tenant={tenant.get('tenantName', 'Xero')}"
         return RedirectResponse(url=frontend_url)

@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { NeuroCard, NeuroCardContent, NeuroCardDescription, NeuroCardHeader, NeuroCardTitle } from '@/components/ui/neuro-card';
 import {
   Select,
   SelectContent,
@@ -239,7 +239,7 @@ export default function OnboardingManual() {
   const progress = step === 'loading' ? 100 : ((currentStepIndex + 1) / steps.length) * 100;
 
   return (
-    <div className="min-h-screen bg-background py-12 px-4">
+    <div className="min-h-screen py-12 px-4">
       <div className="max-w-2xl mx-auto">
         {/* Header */}
         <div className="text-center mb-8">
@@ -279,14 +279,14 @@ export default function OnboardingManual() {
 
         {/* Step: Cash Position */}
         {step === 'cash' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>What's your current cash position?</CardTitle>
-              <CardDescription>
+          <NeuroCard>
+            <NeuroCardHeader>
+              <NeuroCardTitle>What's your current cash position?</NeuroCardTitle>
+              <NeuroCardDescription>
                 Enter your bank account balances as of today. This is your starting point.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
+              </NeuroCardDescription>
+            </NeuroCardHeader>
+            <NeuroCardContent className="space-y-4">
               {accounts.map((account, index) => (
                 <div key={index} className="flex gap-3 items-start">
                   <div className="flex-1 space-y-2">
@@ -339,20 +339,20 @@ export default function OnboardingManual() {
                 <Plus className="h-4 w-4 mr-2" />
                 Add Another Account
               </Button>
-            </CardContent>
-          </Card>
+            </NeuroCardContent>
+          </NeuroCard>
         )}
 
         {/* Step: Clients */}
         {step === 'clients' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Who are your clients?</CardTitle>
-              <CardDescription>
+          <NeuroCard>
+            <NeuroCardHeader>
+              <NeuroCardTitle>Who are your clients?</NeuroCardTitle>
+              <NeuroCardDescription>
                 Add your revenue sources. You can add more later.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
+              </NeuroCardDescription>
+            </NeuroCardHeader>
+            <NeuroCardContent className="space-y-6">
               {clients.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
                   <p>No clients added yet.</p>
@@ -458,20 +458,20 @@ export default function OnboardingManual() {
                 <Plus className="h-4 w-4 mr-2" />
                 Add Client
               </Button>
-            </CardContent>
-          </Card>
+            </NeuroCardContent>
+          </NeuroCard>
         )}
 
         {/* Step: Expenses */}
         {step === 'expenses' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>What are your regular expenses?</CardTitle>
-              <CardDescription>
+          <NeuroCard>
+            <NeuroCardHeader>
+              <NeuroCardTitle>What are your regular expenses?</NeuroCardTitle>
+              <NeuroCardDescription>
                 Add expense buckets for payroll, rent, contractors, tools, etc.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
+              </NeuroCardDescription>
+            </NeuroCardHeader>
+            <NeuroCardContent className="space-y-6">
               {expenses.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
                   <p>No expenses added yet.</p>
@@ -573,21 +573,21 @@ export default function OnboardingManual() {
                 <Plus className="h-4 w-4 mr-2" />
                 Add Expense Bucket
               </Button>
-            </CardContent>
-          </Card>
+            </NeuroCardContent>
+          </NeuroCard>
         )}
 
         {/* Step: Buffer Rule */}
         {step === 'buffer' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Set your cash buffer rule</CardTitle>
-              <CardDescription>
+          <NeuroCard>
+            <NeuroCardHeader>
+              <NeuroCardTitle>Set your cash buffer rule</NeuroCardTitle>
+              <NeuroCardDescription>
                 How many months of expenses do you want to maintain as a safety buffer?
                 Tamio will alert you if your forecast dips below this threshold.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
+              </NeuroCardDescription>
+            </NeuroCardHeader>
+            <NeuroCardContent className="space-y-6">
               <div className="flex items-center gap-4">
                 <div className="flex-1">
                   <Label>Minimum Runway Buffer</Label>
@@ -605,21 +605,21 @@ export default function OnboardingManual() {
                   </Select>
                 </div>
               </div>
-              <div className="p-4 bg-muted rounded-lg">
+              <div className="p-4 bg-muted/50 rounded-lg">
                 <p className="text-sm text-muted-foreground">
                   This rule will be evaluated against your forecast. If any week falls below{' '}
                   <span className="font-medium text-foreground">{bufferMonths} months</span>{' '}
                   of operating expenses, you'll see a warning.
                 </p>
               </div>
-            </CardContent>
-          </Card>
+            </NeuroCardContent>
+          </NeuroCard>
         )}
 
         {/* Step: Loading */}
         {step === 'loading' && (
-          <Card>
-            <CardContent className="py-16">
+          <NeuroCard>
+            <NeuroCardContent className="py-16">
               <div className="text-center space-y-4">
                 <Loader2 className="h-12 w-12 animate-spin mx-auto text-primary" />
                 <h3 className="text-xl font-semibold">Building your 13-week forecast...</h3>
@@ -627,8 +627,8 @@ export default function OnboardingManual() {
                   This will just take a moment.
                 </p>
               </div>
-            </CardContent>
-          </Card>
+            </NeuroCardContent>
+          </NeuroCard>
         )}
 
         {/* Navigation */}
