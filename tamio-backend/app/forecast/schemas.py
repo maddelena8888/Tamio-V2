@@ -13,6 +13,7 @@ class ForecastEventSummary(BaseModel):
     category: str | None
     confidence: str
     confidence_reason: Optional[str] = None
+    source_id: Optional[str] = None
     source_name: Optional[str] = None
     source_type: Optional[str] = None
 

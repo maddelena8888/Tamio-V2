@@ -13,20 +13,21 @@ import {
   SidebarRail,
 } from '@/components/ui/sidebar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { DemoBanner } from '@/components/DemoBanner';
 import {
-  LayoutDashboard,
   Users,
-  LineChart,
-  Lightbulb,
-  Bot,
   Settings,
+  TrendingUp,
+  Activity,
+  Bot,
 } from 'lucide-react';
 
+// Navigation items - Home (TAMI + Alerts + KPIs) is primary
 const navItems = [
-  { title: 'Scenarios', url: '/scenarios', icon: LineChart },
-  { title: 'Insights', url: '/insights', icon: Lightbulb },
-  { title: 'Clients & Expenses', url: '/clients', icon: Users },
-  { title: 'TAMI', url: '/tami', icon: Bot },
+  { title: 'Home', url: '/', icon: Bot },
+  { title: 'Forecast & Scenarios', url: '/scenarios', icon: TrendingUp },
+  { title: 'Alerts & Actions', url: '/action-monitor', icon: Activity },
+  { title: 'Ledger', url: '/clients', icon: Users },
 ];
 
 export default function MainLayout() {
@@ -55,26 +56,6 @@ export default function MainLayout() {
 
         <SidebarContent className="px-2 pt-1 overflow-visible">
           <SidebarMenu>
-            {/* Dashboard link */}
-            <SidebarMenuItem>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={location.pathname === '/'}
-                    className="h-12"
-                  >
-                    <Link to="/">
-                      <LayoutDashboard className="h-5 w-5" />
-                      <span>Dashboard</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </TooltipTrigger>
-                <TooltipContent side="right">Dashboard</TooltipContent>
-              </Tooltip>
-            </SidebarMenuItem>
-
-            {/* Main navigation */}
             {navItems.map((item) => (
               <SidebarMenuItem key={item.title}>
                 <Tooltip>
@@ -121,11 +102,12 @@ export default function MainLayout() {
         <SidebarRail />
       </Sidebar>
 
-      <SidebarInset className="bg-gradient-ambient min-h-screen">
+      <SidebarInset className="bg-gradient-ambient min-h-screen flex flex-col overflow-x-hidden">
+        <DemoBanner />
         <header className="flex h-14 items-center gap-2 px-4">
           <SidebarTrigger className="-ml-2" />
         </header>
-        <main className="flex-1 p-6 overflow-auto">
+        <main className="flex-1 p-6 overflow-x-hidden overflow-y-auto">
           <Outlet />
         </main>
       </SidebarInset>

@@ -17,11 +17,11 @@ class Settings(BaseSettings):
     # Frontend (Vite dev server runs on 5173 by default)
     FRONTEND_URL: str = "http://localhost:5173"
 
-    # OpenAI
-    OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o"
-    OPENAI_MODEL_FAST: str = "gpt-4o-mini"  # Faster model for simple queries
-    OPENAI_MAX_TOKENS: int = 2000
+    # Anthropic (Claude)
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+    ANTHROPIC_MODEL_FAST: str = "claude-sonnet-4-20250514"  # Use same model (Haiku may not be available on all API keys)
+    ANTHROPIC_MAX_TOKENS: int = 2000
 
     # Xero Integration
     XERO_CLIENT_ID: str = ""
@@ -32,13 +32,37 @@ class Settings(BaseSettings):
     # Write: push contacts and transactions (invoices, bills) to Xero
     XERO_SCOPES: str = "offline_access openid accounting.transactions accounting.contacts accounting.settings.read accounting.reports.read"
 
-    # QuickBooks Integration
-    QUICKBOOKS_CLIENT_ID: str = ""
-    QUICKBOOKS_CLIENT_SECRET: str = ""
-    QUICKBOOKS_REDIRECT_URI: str = "http://localhost:8000/api/quickbooks/callback"
-    QUICKBOOKS_ENVIRONMENT: str = "sandbox"  # "sandbox" or "production"
-    # QuickBooks scope for accounting access
-    QUICKBOOKS_SCOPES: str = "com.intuit.quickbooks.accounting"
+    # Demo Account
+    DEMO_TOKEN: str = "DEMO_TOKEN_2026"
+    DEMO_ACCOUNT_EMAIL: str = "demo@agencyco.com"
+
+    # ==========================================================================
+    # Email Notifications (Resend)
+    # ==========================================================================
+    # Get your API key at https://resend.com
+    RESEND_API_KEY: str = ""
+    NOTIFICATION_FROM_EMAIL: str = "Tamio <notifications@tamio.app>"
+
+    # ==========================================================================
+    # Slack Notifications
+    # ==========================================================================
+    # Create a Slack app at https://api.slack.com/apps and get a Bot Token
+    SLACK_BOT_TOKEN: str = ""
+    SLACK_DEFAULT_CHANNEL: str = "#treasury-alerts"
+
+    # ==========================================================================
+    # Feature Flags for Data Architecture Transition
+    # ==========================================================================
+    # Phase 1: Create obligations from clients/expenses (default: True)
+    USE_OBLIGATION_SYSTEM: bool = True
+
+    # Phase 2: Use obligations for forecast computation (default: False)
+    # When True, forecast engine reads from ObligationSchedule instead of Client/ExpenseBucket
+    USE_OBLIGATION_FOR_FORECAST: bool = False
+
+    # Phase 3: Stop generating legacy CashEvents (default: False)
+    # When True, only ObligationSchedule-based events are used
+    DEPRECATE_DIRECT_CASH_EVENTS: bool = False
 
     # CORS
     @property
@@ -49,7 +73,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        case_sensitive=True
+        case_sensitive=True,
+        extra="ignore"  # Allow extra env vars not defined in Settings
     )
 
 

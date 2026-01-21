@@ -14,6 +14,7 @@ from app.data.expenses.schemas import (
     ExpenseBucketWithEventsResponse,
 )
 from app.data.event_generator import generate_events_from_bucket
+from app.config import settings
 
 router = APIRouter()
 
@@ -68,8 +69,14 @@ async def create_expense_bucket(
     await db.commit()
     await db.refresh(bucket)
 
-    # Generate cash events
+    # Generate cash events (legacy approach)
     events = await generate_events_from_bucket(db, bucket)
+
+    # Create ObligationAgreement from expense bucket (new canonical approach)
+    if settings.USE_OBLIGATION_SYSTEM:
+        from app.services.obligations import ObligationService
+        obligation_service = ObligationService(db)
+        await obligation_service.create_obligation_from_expense(bucket)
 
     # Sync to Xero if requested
     if sync_to_xero:
@@ -147,6 +154,12 @@ async def update_expense_bucket(
     await db.commit()
 
     events = await generate_events_from_bucket(db, bucket)
+
+    # Sync ObligationAgreement when expense is updated (new canonical approach)
+    if settings.USE_OBLIGATION_SYSTEM:
+        from app.services.obligations import ObligationService
+        obligation_service = ObligationService(db)
+        await obligation_service.sync_obligation_from_expense(bucket)
 
     # Sync to Xero if requested and expense is linked
     if sync_to_xero and bucket.xero_contact_id:

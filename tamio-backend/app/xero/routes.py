@@ -175,6 +175,14 @@ async def xero_callback(
         # Auto-sync data after successful connection
         try:
             await sync_xero_data(db=db, user_id=user_id, sync_type="full")
+
+            # Run detection after initial sync
+            try:
+                from app.detection.scheduler import run_detections_after_sync
+                await run_detections_after_sync(user_id=user_id, sync_type="xero")
+            except Exception as detection_err:
+                print(f"Post-sync detection failed: {detection_err}")
+
         except Exception as sync_err:
             # Log but don't fail - user can manually sync later
             print(f"Auto-sync failed after Xero connection: {sync_err}")
@@ -241,6 +249,9 @@ async def sync_from_xero(
     - "incremental": Only sync changes since last sync
     - "invoices": Only sync invoices
     - "contacts": Only sync contacts
+
+    After sync completes, automatically runs detection engine to check
+    for alerts based on the new data.
     """
     result = await sync_xero_data(
         db=db,
@@ -248,7 +259,69 @@ async def sync_from_xero(
         sync_type=request.sync_type
     )
 
+    # After main sync, also pull outstanding invoices to update billing_config
+    # This ensures forecast shows correct revenue from Xero invoices
+    if request.sync_type in ["full", "invoices"]:
+        from app.xero.sync_service import SyncService
+        try:
+            sync_service = SyncService(db, request.user_id)
+            invoices_processed, clients_updated, invoice_errors = await sync_service.pull_invoices_from_xero()
+            result["invoices_synced"] = {
+                "processed": invoices_processed,
+                "clients_updated": clients_updated,
+                "errors": invoice_errors
+            }
+        except Exception as e:
+            result["invoices_synced"] = {"error": str(e)}
+
+    # Run detection engine after sync to identify any new alerts
+    # This catches late payments, unexpected expenses, etc. from the synced data
+    try:
+        from app.detection.scheduler import run_detections_after_sync
+        detection_result = await run_detections_after_sync(
+            user_id=request.user_id,
+            sync_type="xero"
+        )
+        result["detections"] = {
+            "alerts_created": detection_result.get("alerts_created", 0),
+            "notifications_sent": detection_result.get("notifications_sent", 0),
+        }
+    except Exception as e:
+        result["detections"] = {"error": str(e)}
+
     return schemas.XeroSyncResult(**result)
+
+
+@router.post("/sync-invoices")
+async def sync_invoices_only(
+    user_id: str = Query(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Sync only outstanding invoices from Xero.
+
+    This updates client billing_config.outstanding_invoices which is used
+    by the forecast engine to show expected revenue from actual invoices.
+    """
+    from app.xero.sync_service import SyncService
+
+    connection = await get_valid_connection(db, user_id)
+    if not connection:
+        raise HTTPException(
+            status_code=400,
+            detail="No active Xero connection. Please connect to Xero first."
+        )
+
+    sync_service = SyncService(db, user_id)
+    invoices_processed, clients_updated, errors = await sync_service.pull_invoices_from_xero()
+
+    return {
+        "success": len(errors) == 0,
+        "invoices_processed": invoices_processed,
+        "clients_updated": clients_updated,
+        "errors": errors,
+        "message": f"Synced {invoices_processed} invoices, updated {clients_updated} clients"
+    }
 
 
 @router.get("/preview")

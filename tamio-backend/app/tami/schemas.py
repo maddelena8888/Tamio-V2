@@ -207,10 +207,35 @@ class BehaviorInsightsSummary(BaseModel):
     top_concerns: List[str] = Field(default_factory=list)
 
 
+class BusinessProfileSummary(BaseModel):
+    """Business profile context for TAMI."""
+    industry: Optional[str] = None
+    subcategory: Optional[str] = None
+    revenue_range: Optional[str] = None
+    base_currency: str = "USD"
+
+
+class AlertSummary(BaseModel):
+    """Summary of an active detection alert for TAMI context."""
+    alert_id: str
+    title: str
+    description: Optional[str] = None
+    detection_type: str
+    severity: str  # emergency, this_week, upcoming
+    status: str  # active, acknowledged, preparing, resolved, dismissed
+    cash_impact: Optional[float] = None
+    deadline: Optional[str] = None  # ISO date string
+    days_until_deadline: Optional[int] = None
+    context_data: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ContextPayload(BaseModel):
     """Deterministic context injected into Agent2."""
     # User info
     user_id: str
+
+    # Business profile
+    business_profile: Optional[BusinessProfileSummary] = None
 
     # Current cash position
     starting_cash: str
@@ -242,6 +267,9 @@ class ContextPayload(BaseModel):
     # Behavior insights and triggered scenarios (Phase 4 integration)
     behavior_insights: Optional[BehaviorInsightsSummary] = None
     triggered_scenarios: List[TriggeredScenarioSummary] = Field(default_factory=list)
+
+    # Active detection alerts (V4 architecture)
+    active_alerts: List["AlertSummary"] = Field(default_factory=list)
 
     # Timestamp
     generated_at: str

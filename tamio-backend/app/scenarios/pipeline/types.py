@@ -257,7 +257,7 @@ class ScenarioDefinition(BaseModel):
 # =============================================================================
 
 class EventDelta(BaseModel):
-    """A single event modification."""
+    """A single event modification (LEGACY - kept for backward compatibility)."""
     event_id: str
     original_event_id: Optional[str] = None
     operation: str  # "add", "modify", "delete"
@@ -272,7 +272,7 @@ class EventDelta(BaseModel):
 
 
 class ObjectDelta(BaseModel):
-    """A modification to a canonical object (agreement, schedule, etc.)."""
+    """A modification to a canonical object (agreement, schedule, etc.) - LEGACY."""
     object_type: str  # "agreement", "schedule", "client", "obligation"
     object_id: str
     original_object_id: Optional[str] = None
@@ -287,28 +287,119 @@ class ObjectDelta(BaseModel):
     change_reason: str
 
 
+# =============================================================================
+# CANONICAL SCHEDULE-BASED DELTAS (V4)
+# =============================================================================
+
+class ScheduleDelta(BaseModel):
+    """
+    A virtual ObligationSchedule modification (canonical overlay).
+
+    Scenarios create virtual schedule deltas that overlay on base canonical data.
+    These are never committed until explicit user confirmation.
+    """
+    schedule_id: str = Field(..., description="Generated ID for virtual schedule")
+    original_schedule_id: Optional[str] = Field(None, description="If modifying existing schedule")
+    obligation_id: Optional[str] = Field(None, description="Parent obligation (existing or virtual)")
+
+    # Operation type
+    operation: str = Field(..., description="add, modify, delete, or defer")
+
+    # Schedule data for add/modify operations
+    schedule_data: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Contains: due_date, estimated_amount, confidence, status, category, etc."
+    )
+
+    # Attribution
+    scenario_id: str
+    linked_change_id: Optional[str] = None
+    change_reason: str = ""
+
+    # Confidence scoring for scenario schedules
+    confidence: str = Field("medium", description="high, medium, or low")
+    confidence_factors: List[str] = Field(default_factory=list, description="Factors affecting confidence")
+
+
+class AgreementDelta(BaseModel):
+    """
+    A virtual ObligationAgreement modification (canonical overlay).
+
+    For scenarios that create new revenue/expense streams (client_gain, hiring, etc.)
+    """
+    agreement_id: str = Field(..., description="Generated ID for virtual agreement")
+    original_agreement_id: Optional[str] = Field(None, description="If modifying existing agreement")
+
+    # Operation type
+    operation: str = Field(..., description="add, modify, or deactivate")
+
+    # Agreement data for add/modify operations
+    agreement_data: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Contains: obligation_type, base_amount, frequency, start_date, category, etc."
+    )
+
+    # Attribution
+    scenario_id: str
+    linked_change_id: Optional[str] = None
+    change_reason: str = ""
+
+
 class ScenarioDelta(BaseModel):
     """
     Complete set of canonical adjustments for a scenario.
 
     This represents all changes that would be made to the canonical
-    data if the scenario is confirmed.
+    data if the scenario is confirmed. Uses virtual overlays that
+    never modify base data until explicit confirmation.
     """
     scenario_id: str
 
-    # Event changes
+    # ==========================================================================
+    # CANONICAL SCHEDULE-BASED DELTAS (V4 - Primary)
+    # ==========================================================================
+
+    # Schedule changes (ObligationSchedule overlays)
+    created_schedules: List[ScheduleDelta] = Field(default_factory=list)
+    updated_schedules: List[ScheduleDelta] = Field(default_factory=list)
+    deleted_schedule_ids: List[str] = Field(default_factory=list)
+
+    # Agreement changes (ObligationAgreement overlays)
+    created_agreements: List[AgreementDelta] = Field(default_factory=list)
+    updated_agreements: List[AgreementDelta] = Field(default_factory=list)
+    deactivated_agreement_ids: List[str] = Field(default_factory=list)
+
+    # ==========================================================================
+    # LEGACY EVENT-BASED DELTAS (kept for backward compatibility)
+    # ==========================================================================
+
+    # Event changes (CashEvent - legacy)
     created_events: List[EventDelta] = Field(default_factory=list)
     updated_events: List[EventDelta] = Field(default_factory=list)
     deleted_event_ids: List[str] = Field(default_factory=list)
 
-    # Object changes (agreements, schedules, etc.)
+    # Object changes (generic - legacy)
     created_objects: List[ObjectDelta] = Field(default_factory=list)
     updated_objects: List[ObjectDelta] = Field(default_factory=list)
     deleted_object_ids: List[str] = Field(default_factory=list)
 
-    # Summary
-    total_events_affected: int = 0
+    # ==========================================================================
+    # SUMMARY
+    # ==========================================================================
+
+    # Counts
+    total_schedules_affected: int = 0
+    total_events_affected: int = 0  # Legacy
+
+    # Financial impact
     net_cash_impact: Decimal = Decimal("0")
+
+    # Confidence summary
+    overall_confidence: str = "medium"
+    confidence_breakdown: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of schedules by confidence level: {high: N, medium: N, low: N}"
+    )
 
     # Attribution breakdown
     changes_by_linked_change: Dict[str, int] = Field(default_factory=dict)

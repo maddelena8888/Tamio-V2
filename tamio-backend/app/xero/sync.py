@@ -8,6 +8,7 @@ from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
+from sqlalchemy.orm import attributes
 
 from app.xero.client import XeroClient, get_valid_connection
 from app.xero.models import XeroConnection, XeroSyncLog
@@ -256,18 +257,20 @@ async def sync_invoices(
     xero_client: XeroClient
 ) -> Dict[str, Any]:
     """
-    Sync Xero invoices to Tamio cash events.
+    Sync Xero invoices to Tamio clients and cash events.
 
     Mapping:
-    - ACCREC (Accounts Receivable) → CashEvent direction="in"
+    - ACCREC (Accounts Receivable) → Client (project type) + CashEvent direction="in"
     - ACCPAY (Accounts Payable) → CashEvent direction="out"
-    - Due date → CashEvent date
-    - Amount due → CashEvent amount
+    - Due date → CashEvent date / Client milestone
+    - Amount due → CashEvent amount / Client milestone amount
     """
+    from app.data.base import generate_id
+
     results = {
         "records_fetched": {"invoices": 0},
-        "records_created": {"cash_events": 0},
-        "records_updated": {"cash_events": 0},
+        "records_created": {"cash_events": 0, "clients": 0},
+        "records_updated": {"cash_events": 0, "clients": 0},
         "errors": []
     }
 
@@ -282,26 +285,37 @@ async def sync_invoices(
                 data_models.Client.user_id == user_id
             )
         )
-        clients_by_name = {c.name.lower(): c for c in clients_result.scalars().all()}
+        existing_clients = list(clients_result.scalars().all())
+        clients_by_name = {c.name.lower(): c for c in existing_clients}
+        clients_by_xero_id = {c.xero_contact_id: c for c in existing_clients if c.xero_contact_id}
 
         # Get today for week number calculation
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
 
+        # Group receivable invoices by contact for client creation/update
+        receivables_by_contact: Dict[str, List[dict]] = {}
+
         for invoice in invoices:
             if invoice["amount_due"] <= 0:
                 continue
 
-            # Determine direction
             is_receivable = invoice["type"] == "ACCREC"
-            direction = "in" if is_receivable else "out"
+
+            if is_receivable:
+                contact_name = invoice.get("contact_name", "")
+                contact_id = invoice.get("contact_id", "")
+                if contact_name:
+                    key = contact_id or contact_name.lower()
+                    if key not in receivables_by_contact:
+                        receivables_by_contact[key] = []
+                    receivables_by_contact[key].append(invoice)
 
             # Get due date
             due_date = invoice.get("due_date")
             if due_date and isinstance(due_date, datetime):
                 due_date = due_date.date()
             elif not due_date:
-                # Default to 30 days from invoice date
                 inv_date = invoice.get("date")
                 if inv_date and isinstance(inv_date, datetime):
                     due_date = (inv_date + timedelta(days=30)).date()
@@ -327,11 +341,10 @@ async def sync_invoices(
             else:
                 confidence = "low"
 
-            # Determine category based on account code (for expenses)
+            # Determine category
             if is_receivable:
                 category = "client_invoice"
             else:
-                # Use account code categorization for bills/expenses
                 line_items = invoice.get("line_items", [])
                 category = get_category_from_line_items(line_items)
 
@@ -341,7 +354,7 @@ async def sync_invoices(
                 date=due_date,
                 week_number=week_number,
                 amount=Decimal(str(invoice["amount_due"])),
-                direction=direction,
+                direction="in" if is_receivable else "out",
                 event_type="expected_revenue" if is_receivable else "expected_expense",
                 category=category,
                 client_id=client_id,
@@ -352,6 +365,91 @@ async def sync_invoices(
             )
             db.add(event)
             results["records_created"]["cash_events"] += 1
+
+        # Create/update clients from receivable invoices
+        for contact_key, contact_invoices in receivables_by_contact.items():
+            first_invoice = contact_invoices[0]
+            contact_name = first_invoice.get("contact_name", "")
+            contact_id = first_invoice.get("contact_id")
+            contact_lower = contact_name.lower()
+
+            # Check if client exists by Xero ID or name
+            existing_client = None
+            if contact_id and contact_id in clients_by_xero_id:
+                existing_client = clients_by_xero_id[contact_id]
+            elif contact_lower in clients_by_name:
+                existing_client = clients_by_name[contact_lower]
+
+            # Build milestones from outstanding invoices
+            milestones = []
+            for inv in contact_invoices:
+                inv_due_date = inv.get("due_date")
+                if inv_due_date and isinstance(inv_due_date, datetime):
+                    inv_due_date = inv_due_date.date()
+                elif not inv_due_date:
+                    inv_due_date = today + timedelta(days=30)
+
+                milestones.append({
+                    "name": f"Invoice #{inv.get('invoice_number', 'N/A')}",
+                    "expected_date": inv_due_date.isoformat(),
+                    "amount": float(inv["amount_due"]),
+                    "payment_terms": "net_0",  # Due date already accounts for terms
+                    "xero_invoice_id": inv.get("invoice_id"),
+                })
+
+            if existing_client:
+                # Update existing client with outstanding invoices
+                existing_config = dict(existing_client.billing_config or {})
+
+                # Store outstanding invoices for ALL client types
+                # These are one-time payments separate from recurring billing
+                existing_config["outstanding_invoices"] = milestones
+
+                # For project clients, also set as milestones for backward compatibility
+                if existing_client.client_type == "project":
+                    existing_config["milestones"] = milestones
+
+                # Assign a NEW dict to force SQLAlchemy to detect the change
+                existing_client.billing_config = existing_config
+                # Explicitly flag as modified for JSONB column
+                attributes.flag_modified(existing_client, "billing_config")
+
+                # Link to Xero if not already
+                if contact_id and not existing_client.xero_contact_id:
+                    existing_client.xero_contact_id = contact_id
+                    existing_client.source = "xero"
+                    existing_client.sync_status = "synced"
+                    existing_client.last_synced_at = datetime.now(timezone.utc)
+
+                results["records_updated"]["clients"] += 1
+            else:
+                # Create new client as project type with milestones
+                new_client = build_canonical_client(
+                    user_id=user_id,
+                    name=contact_name,
+                    client_type="project",
+                    currency=first_invoice.get("currency_code") or "USD",
+                    status="active",
+                    payment_behavior="unknown",
+                    churn_risk="low",
+                    scope_risk="low",
+                    billing_config={
+                        "milestones": milestones,
+                    },
+                    notes=f"Imported from Xero outstanding invoices"
+                )
+                new_client.xero_contact_id = contact_id
+                new_client.source = "xero"
+                new_client.sync_status = "synced"
+                new_client.last_synced_at = datetime.now(timezone.utc)
+
+                db.add(new_client)
+                # Add to lookup for subsequent invoices
+                clients_by_name[contact_lower] = new_client
+                if contact_id:
+                    clients_by_xero_id[contact_id] = new_client
+
+                results["records_created"]["clients"] += 1
 
         await db.flush()
 

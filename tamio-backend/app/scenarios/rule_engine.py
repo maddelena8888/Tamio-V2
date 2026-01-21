@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from app.scenarios import models
 from app.data.models import ExpenseBucket, Client
+from app.detection.models import DetectionAlert, DetectionType, AlertStatus, AlertSeverity
 
 
 async def evaluate_rules(
@@ -269,19 +270,39 @@ async def suggest_scenarios(
     evaluations: List[models.RuleEvaluation]
 ) -> List[Dict[str, Any]]:
     """
-    Suggest relevant scenarios based on current forecast and risks.
-    Uses real client and expense data to generate actionable suggestions.
+    Suggest relevant scenarios based on ACTIVE ALERTS and current forecast.
+
+    Priority order:
+    1. Scenarios derived directly from active/acknowledged detection alerts
+    2. Scenarios based on forecast health and rule evaluations
+    3. Fallback suggestions from client/expense data
+
+    Each suggestion includes:
+    - source_alert_id: Links to the originating alert (if applicable)
+    - source_detection_type: The detection type that triggered this suggestion
 
     Returns:
-        List of suggested scenario configs with real entity names
+        List of suggested scenario configs with alert linkage
     """
     suggestions = []
 
-    # Analyze current state
-    has_breach = any(e.is_breached for e in evaluations)
-    runway_weeks = forecast.get("summary", {}).get("runway_weeks", 13)
+    # ========================================================================
+    # PHASE 1: Generate scenarios from ACTIVE DETECTION ALERTS
+    # These are the highest priority - they represent real, detected problems
+    # ========================================================================
+    result = await db.execute(
+        select(DetectionAlert).where(
+            DetectionAlert.user_id == user_id,
+            DetectionAlert.status.in_([AlertStatus.ACTIVE, AlertStatus.ACKNOWLEDGED])
+        ).order_by(
+            # Emergency alerts first, then by urgency score
+            DetectionAlert.severity.asc(),  # EMERGENCY < THIS_WEEK < UPCOMING
+            DetectionAlert.urgency_score.desc()
+        )
+    )
+    active_alerts = result.scalars().all()
 
-    # Load real clients
+    # Load clients and expenses for context
     result = await db.execute(
         select(Client).where(
             Client.user_id == user_id,
@@ -289,18 +310,13 @@ async def suggest_scenarios(
         ).order_by(Client.created_at.desc())
     )
     clients = result.scalars().all()
+    clients_by_id = {c.id: c for c in clients}
 
-    # Load real expense buckets
     result = await db.execute(
         select(ExpenseBucket).where(ExpenseBucket.user_id == user_id)
     )
     expenses = result.scalars().all()
 
-    # Find clients with delayed payment behavior or high churn risk
-    delayed_clients = [c for c in clients if c.payment_behavior == "delayed"]
-    high_risk_clients = [c for c in clients if c.churn_risk == "high"]
-
-    # Sort clients by monthly revenue (highest first) for "key client" scenarios
     def get_client_amount(c):
         if c.billing_config and c.billing_config.get("amount"):
             return Decimal(str(c.billing_config.get("amount", 0)))
@@ -308,157 +324,288 @@ async def suggest_scenarios(
 
     clients_by_revenue = sorted(clients, key=get_client_amount, reverse=True)
 
-    # 1. Suggest payment delay scenario for clients with delayed payment behavior
-    if delayed_clients:
+    # Map detection types to scenario types
+    for alert in active_alerts:
+        suggestion = _alert_to_scenario_suggestion(alert, clients_by_id, expenses)
+        if suggestion and not _suggestion_exists(suggestions, suggestion):
+            suggestions.append(suggestion)
+
+    # ========================================================================
+    # PHASE 2: Add forecast-based suggestions if we don't have enough from alerts
+    # ========================================================================
+    has_breach = any(e.is_breached for e in evaluations)
+    runway_weeks = forecast.get("summary", {}).get("runway_weeks", 13)
+
+    # Find clients with risky attributes
+    delayed_clients = [c for c in clients if c.payment_behavior == "delayed"]
+    high_risk_clients = [c for c in clients if c.churn_risk == "high"]
+
+    # Add payment delay scenarios for risky clients (if not already from alerts)
+    if len(suggestions) < 3 and delayed_clients:
         client = delayed_clients[0]
-        suggestions.append({
+        suggestion = {
             "scenario_type": "payment_delay_in",
             "name": f"{client.name} Delays Payment by 14 Days",
             "description": f"{client.name} has a history of delayed payments. Model the impact of a 2-week delay.",
             "priority": "high",
+            "source_alert_id": None,
+            "source_detection_type": None,
             "prefill_params": {
                 "client_id": client.id,
                 "delay_days": 14
             }
-        })
-    elif clients_by_revenue:
-        # Suggest for largest client if no delayed clients
-        client = clients_by_revenue[0]
-        suggestions.append({
-            "scenario_type": "payment_delay_in",
-            "name": f"{client.name} Delays Payment by 10 Days",
-            "description": f"Model what happens if your largest client delays payment.",
-            "priority": "medium",
-            "prefill_params": {
-                "client_id": client.id,
-                "delay_days": 10
-            }
-        })
+        }
+        if not _suggestion_exists(suggestions, suggestion):
+            suggestions.append(suggestion)
 
-    # 2. Suggest client loss for high churn risk or largest client
-    if high_risk_clients:
+    # Add client loss for high churn risk clients
+    if len(suggestions) < 3 and high_risk_clients:
         client = high_risk_clients[0]
         monthly = get_client_amount(client)
-        suggestions.append({
+        suggestion = {
             "scenario_type": "client_loss",
             "name": f"Loss of {client.name}",
             "description": f"{client.name} is marked as high churn risk (${monthly:,.0f}/month impact).",
             "priority": "high",
+            "source_alert_id": None,
+            "source_detection_type": None,
             "prefill_params": {
                 "client_id": client.id
             }
-        })
-    elif clients_by_revenue:
-        client = clients_by_revenue[0]
-        monthly = get_client_amount(client)
-        suggestions.append({
-            "scenario_type": "client_loss",
-            "name": f"Loss of {client.name}",
-            "description": f"What happens if you lose your largest client (${monthly:,.0f}/month)?",
-            "priority": "medium",
-            "prefill_params": {
-                "client_id": client.id
-            }
-        })
+        }
+        if not _suggestion_exists(suggestions, suggestion):
+            suggestions.append(suggestion)
 
-    # 3. Suggest expense changes based on actual expense buckets
+    # Add expense reduction if buffer is at risk
     contractor_expenses = [e for e in expenses if e.category == "contractors" or "contractor" in e.name.lower()]
     discretionary_expenses = [e for e in expenses if e.priority in ["low", "medium"]]
 
-    if contractor_expenses and (has_breach or runway_weeks < 8):
-        expense = contractor_expenses[0]
-        increase_amount = float(expense.monthly_amount) * 0.2 if expense.monthly_amount else 1000
-        suggestions.append({
-            "scenario_type": "increased_expense",
-            "name": f"Increased {expense.name} Cost",
-            "description": f"Model a 20% increase in {expense.name} expenses.",
-            "priority": "medium",
-            "prefill_params": {
-                "expense_bucket_id": expense.id,
-                "amount": increase_amount
-            }
-        })
-    elif discretionary_expenses:
+    if len(suggestions) < 3 and (has_breach or runway_weeks < 8) and discretionary_expenses:
         expense = discretionary_expenses[0]
         reduction_amount = float(expense.monthly_amount) * 0.25 if expense.monthly_amount else 500
-        suggestions.append({
+        suggestion = {
             "scenario_type": "decreased_expense",
             "name": f"Reduce {expense.name}",
             "description": f"Model reducing {expense.name} by 25% to improve runway.",
-            "priority": "low" if not has_breach else "high",
+            "priority": "high" if has_breach else "medium",
+            "source_alert_id": None,
+            "source_detection_type": None,
             "prefill_params": {
                 "expense_bucket_id": expense.id,
                 "amount": reduction_amount
             }
-        })
+        }
+        if not _suggestion_exists(suggestions, suggestion):
+            suggestions.append(suggestion)
 
-    # 4. Suggest growth scenarios if healthy runway
-    if not has_breach and runway_weeks > 10:
-        suggestions.append({
-            "scenario_type": "hiring",
-            "name": "New Team Member",
-            "description": "Model adding a new hire at $8,000/month.",
-            "priority": "low",
-            "prefill_params": {
-                "amount": 8000
-            }
-        })
+    # ========================================================================
+    # PHASE 3: Fallback suggestions to ensure we always have at least 3
+    # ========================================================================
+    if len(suggestions) < 3 and clients_by_revenue:
+        client = clients_by_revenue[0]
+        monthly = get_client_amount(client)
 
-        suggestions.append({
-            "scenario_type": "client_gain",
-            "name": "New Client Win",
-            "description": "Model winning a new client at $5,000/month.",
-            "priority": "low",
-            "prefill_params": {
-                "amount": 5000
-            }
-        })
-
-    # Ensure we always have at least 3 suggestions with fallbacks
-    if len(suggestions) < 3:
-        # Add generic suggestions if we don't have real data
+        # Payment delay for largest client
         if not any(s["scenario_type"] == "payment_delay_in" for s in suggestions):
-            if clients_by_revenue:
-                client = clients_by_revenue[0]
-                suggestions.append({
-                    "scenario_type": "payment_delay_in",
-                    "name": f"{client.name} Delays Payment",
-                    "description": "Model the impact of delayed client payment.",
-                    "priority": "medium",
-                    "prefill_params": {
-                        "client_id": client.id,
-                        "delay_days": 14
-                    }
-                })
-            else:
-                suggestions.append({
-                    "scenario_type": "payment_delay_in",
-                    "name": "Client Delays Payment by 10 Days",
-                    "description": "Model what happens if a client delays payment.",
-                    "priority": "medium",
-                    "prefill_params": {
-                        "delay_days": 10
-                    }
-                })
-
-        if not any(s["scenario_type"] == "client_loss" for s in suggestions):
             suggestions.append({
-                "scenario_type": "client_loss",
-                "name": "Loss of Client",
-                "description": "Model the impact of losing a client.",
+                "scenario_type": "payment_delay_in",
+                "name": f"{client.name} Delays Payment by 14 Days",
+                "description": f"Model what happens if your largest client ({client.name}) delays payment.",
                 "priority": "medium",
-                "prefill_params": {}
-            })
-
-        if not any(s["scenario_type"] == "increased_expense" for s in suggestions):
-            suggestions.append({
-                "scenario_type": "increased_expense",
-                "name": "Increased Contractor Payment",
-                "description": "Model increased contractor or vendor costs.",
-                "priority": "low",
+                "source_alert_id": None,
+                "source_detection_type": None,
                 "prefill_params": {
-                    "amount": 2000
+                    "client_id": client.id,
+                    "delay_days": 14
                 }
             })
 
+        # Client loss for largest client
+        if len(suggestions) < 3 and not any(s["scenario_type"] == "client_loss" for s in suggestions):
+            suggestions.append({
+                "scenario_type": "client_loss",
+                "name": f"Loss of {client.name}",
+                "description": f"What happens if you lose your largest client (${monthly:,.0f}/month)?",
+                "priority": "medium",
+                "source_alert_id": None,
+                "source_detection_type": None,
+                "prefill_params": {
+                    "client_id": client.id
+                }
+            })
+
+    # Expense increase as final fallback
+    if len(suggestions) < 3:
+        suggestions.append({
+            "scenario_type": "increased_expense",
+            "name": "Increased Operating Costs",
+            "description": "Model a 10% increase in operating expenses.",
+            "priority": "low",
+            "source_alert_id": None,
+            "source_detection_type": None,
+            "prefill_params": {
+                "amount": 2000
+            }
+        })
+
     return suggestions[:3]  # Return top 3 suggestions
+
+
+def _alert_to_scenario_suggestion(
+    alert: DetectionAlert,
+    clients_by_id: Dict[str, Client],
+    expenses: List[ExpenseBucket]
+) -> Optional[Dict[str, Any]]:
+    """
+    Convert a detection alert into a scenario suggestion.
+
+    Maps detection types to appropriate scenario types:
+    - LATE_PAYMENT -> payment_delay_in
+    - CLIENT_CHURN -> client_loss
+    - UNEXPECTED_EXPENSE -> increased_expense
+    - BUFFER_BREACH -> decreased_expense (defensive)
+    - etc.
+    """
+    context = alert.context_data or {}
+    priority = "high" if alert.severity == AlertSeverity.EMERGENCY else "medium"
+
+    if alert.detection_type == DetectionType.LATE_PAYMENT:
+        # Late payment alert -> suggest modeling extended delay
+        client_id = context.get("client_id")
+        client_name = context.get("client_name", "Client")
+        days_overdue = context.get("days_overdue", 14)
+
+        return {
+            "scenario_type": "payment_delay_in",
+            "name": f"{client_name} Delays Payment by {days_overdue} Days",
+            "description": f"Active alert: {client_name} payment is {days_overdue} days overdue. Model extended delay impact.",
+            "priority": priority,
+            "source_alert_id": alert.id,
+            "source_detection_type": alert.detection_type.value,
+            "prefill_params": {
+                "client_id": client_id,
+                "delay_days": days_overdue
+            }
+        }
+
+    elif alert.detection_type == DetectionType.CLIENT_CHURN:
+        # Client churn risk -> suggest modeling client loss
+        client_id = context.get("client_id")
+        client_name = context.get("client_name", "Client")
+        client = clients_by_id.get(client_id)
+        monthly = Decimal("0")
+        if client and client.billing_config:
+            monthly = Decimal(str(client.billing_config.get("amount", 0)))
+
+        return {
+            "scenario_type": "client_loss",
+            "name": f"Loss of {client_name}",
+            "description": f"Active alert: {client_name} has high churn risk. Model losing this client (${monthly:,.0f}/month).",
+            "priority": priority,
+            "source_alert_id": alert.id,
+            "source_detection_type": alert.detection_type.value,
+            "prefill_params": {
+                "client_id": client_id
+            }
+        }
+
+    elif alert.detection_type == DetectionType.UNEXPECTED_EXPENSE:
+        # Unexpected expense spike -> suggest modeling continued increase
+        bucket_id = context.get("bucket_id")
+        bucket_name = context.get("bucket_name", "Expense")
+        variance_amount = context.get("variance_amount", 0)
+
+        return {
+            "scenario_type": "increased_expense",
+            "name": f"Increased {bucket_name} Costs",
+            "description": f"Active alert: {bucket_name} spiked unexpectedly. Model continued increase.",
+            "priority": priority,
+            "source_alert_id": alert.id,
+            "source_detection_type": alert.detection_type.value,
+            "prefill_params": {
+                "expense_bucket_id": bucket_id,
+                "amount": variance_amount
+            }
+        }
+
+    elif alert.detection_type == DetectionType.BUFFER_BREACH:
+        # Buffer breach -> suggest cost reduction scenario
+        shortfall = context.get("shortfall", 0)
+
+        # Find discretionary expense to suggest cutting
+        discretionary = [e for e in expenses if e.priority in ["low", "medium"]]
+        if discretionary:
+            expense = discretionary[0]
+            return {
+                "scenario_type": "decreased_expense",
+                "name": f"Reduce {expense.name} by 25%",
+                "description": f"Active alert: Cash buffer breach detected. Model reducing {expense.name} to improve buffer.",
+                "priority": "high",
+                "source_alert_id": alert.id,
+                "source_detection_type": alert.detection_type.value,
+                "prefill_params": {
+                    "expense_bucket_id": expense.id,
+                    "amount": float(expense.monthly_amount or 0) * 0.25
+                }
+            }
+
+    elif alert.detection_type == DetectionType.PAYROLL_SAFETY:
+        # Payroll at risk -> suggest accelerating collections (payment delay in reverse)
+        # This suggests what happens if a key client delays further
+        shortfall = context.get("shortfall", 0)
+
+        return {
+            "scenario_type": "payment_delay_in",
+            "name": "Key Client Payment Delay",
+            "description": f"Active alert: Payroll safety at risk. Model impact if key payment is delayed.",
+            "priority": "high",
+            "source_alert_id": alert.id,
+            "source_detection_type": alert.detection_type.value,
+            "prefill_params": {
+                "delay_days": 7
+            }
+        }
+
+    elif alert.detection_type == DetectionType.RUNWAY_THRESHOLD:
+        # Runway breach -> suggest expense reduction
+        weeks_remaining = context.get("runway_weeks", 8)
+
+        discretionary = [e for e in expenses if e.priority in ["low", "medium"]]
+        if discretionary:
+            expense = discretionary[0]
+            return {
+                "scenario_type": "decreased_expense",
+                "name": f"Reduce {expense.name}",
+                "description": f"Active alert: Runway is {weeks_remaining} weeks. Model cost reduction to extend runway.",
+                "priority": "high",
+                "source_alert_id": alert.id,
+                "source_detection_type": alert.detection_type.value,
+                "prefill_params": {
+                    "expense_bucket_id": expense.id,
+                    "amount": float(expense.monthly_amount or 0) * 0.3
+                }
+            }
+
+    # For other alert types, return None (no direct scenario mapping)
+    return None
+
+
+def _suggestion_exists(suggestions: List[Dict], new_suggestion: Dict) -> bool:
+    """Check if a similar suggestion already exists to avoid duplicates."""
+    for s in suggestions:
+        # Same scenario type + same client/expense = duplicate
+        if s["scenario_type"] == new_suggestion["scenario_type"]:
+            s_client = s.get("prefill_params", {}).get("client_id")
+            n_client = new_suggestion.get("prefill_params", {}).get("client_id")
+            s_expense = s.get("prefill_params", {}).get("expense_bucket_id")
+            n_expense = new_suggestion.get("prefill_params", {}).get("expense_bucket_id")
+
+            if s_client and n_client and s_client == n_client:
+                return True
+            if s_expense and n_expense and s_expense == n_expense:
+                return True
+            # If neither has specific entity, compare by type only for generic scenarios
+            if not s_client and not n_client and not s_expense and not n_expense:
+                return True
+
+    return False

@@ -14,6 +14,7 @@ from app.data.clients.schemas import (
     ClientWithEventsResponse,
 )
 from app.data.event_generator import generate_events_from_client
+from app.config import settings
 
 router = APIRouter()
 
@@ -26,6 +27,66 @@ async def _sync_client_to_xero(db: AsyncSession, client: models.Client, create_i
     success, error = await sync.push_client_to_xero(client, create_invoice=create_invoice)
     if not success:
         print(f"Failed to sync client {client.id} to Xero: {error}")
+
+
+def _should_auto_pause_client(billing_config: dict, client_type: str) -> bool:
+    """
+    Determine if a client should be auto-paused based on $0 billing amount.
+
+    Clients with no revenue attached should be detected as 'paused'.
+    """
+    if not billing_config:
+        return True
+
+    # Check based on client type
+    if client_type == "retainer":
+        amount = billing_config.get("amount", 0)
+        try:
+            return float(amount) <= 0
+        except (ValueError, TypeError):
+            return True
+
+    elif client_type == "project":
+        # Check milestones total or total_value
+        total_value = billing_config.get("total_value", 0)
+        milestones = billing_config.get("milestones", [])
+
+        try:
+            if total_value and float(total_value) > 0:
+                return False
+            # Check if any milestone has an amount
+            for milestone in milestones:
+                if float(milestone.get("amount", 0)) > 0:
+                    return False
+            return True
+        except (ValueError, TypeError):
+            return True
+
+    elif client_type == "usage":
+        typical_amount = billing_config.get("typical_amount", 0)
+        try:
+            return float(typical_amount) <= 0
+        except (ValueError, TypeError):
+            return True
+
+    elif client_type == "mixed":
+        # Check all sub-configs
+        retainer = billing_config.get("retainer", {})
+        project = billing_config.get("project", {})
+        usage = billing_config.get("usage", {})
+
+        has_retainer_amount = float(retainer.get("amount", 0)) > 0 if retainer else False
+        has_usage_amount = float(usage.get("typical_amount", 0)) > 0 if usage else False
+        has_project_value = float(project.get("total_value", 0)) > 0 if project else False
+
+        return not (has_retainer_amount or has_usage_amount or has_project_value)
+
+    # Default: check for generic amount field
+    amount = billing_config.get("amount", 0)
+    try:
+        return float(amount) <= 0
+    except (ValueError, TypeError):
+        return True
 
 
 @router.post("/clients", response_model=ClientWithEventsResponse)
@@ -47,13 +108,18 @@ async def create_client(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Auto-detect if client should be paused (no revenue attached)
+    effective_status = data.status
+    if effective_status == "active" and _should_auto_pause_client(data.billing_config, data.client_type):
+        effective_status = "paused"
+
     # Create client
     client = models.Client(
         user_id=data.user_id,
         name=data.name,
         client_type=data.client_type,
         currency=data.currency,
-        status=data.status,
+        status=effective_status,
         payment_behavior=data.payment_behavior,
         churn_risk=data.churn_risk,
         scope_risk=data.scope_risk,
@@ -66,8 +132,14 @@ async def create_client(
     await db.commit()
     await db.refresh(client)
 
-    # Generate cash events from billing config
+    # Generate cash events from billing config (legacy approach)
     events = await generate_events_from_client(db, client)
+
+    # Create ObligationAgreement from client (new canonical approach)
+    if settings.USE_OBLIGATION_SYSTEM:
+        from app.services.obligations import ObligationService
+        obligation_service = ObligationService(db)
+        await obligation_service.create_obligation_from_client(client)
 
     # Sync to Xero if requested
     if sync_to_xero:
@@ -132,6 +204,16 @@ async def update_client(
     for field, value in update_data.items():
         setattr(client, field, value)
 
+    # Auto-detect if client should be paused (no revenue attached)
+    # Only auto-pause if status is currently "active" and billing shows $0
+    effective_billing = update_data.get("billing_config", client.billing_config) or client.billing_config
+    effective_type = update_data.get("client_type", client.client_type) or client.client_type
+    if client.status == "active" and _should_auto_pause_client(effective_billing, effective_type):
+        client.status = "paused"
+    # Also auto-reactivate if a paused client gets a positive amount
+    elif client.status == "paused" and not _should_auto_pause_client(effective_billing, effective_type):
+        client.status = "active"
+
     # Mark as pending sync if has Xero connection
     if client.xero_contact_id and sync_to_xero:
         client.sync_status = "pending_push"
@@ -149,8 +231,14 @@ async def update_client(
     )
     await db.commit()
 
-    # Generate new events
+    # Generate new events (legacy approach)
     events = await generate_events_from_client(db, client)
+
+    # Sync ObligationAgreement when client is updated (new canonical approach)
+    if settings.USE_OBLIGATION_SYSTEM:
+        from app.services.obligations import ObligationService
+        obligation_service = ObligationService(db)
+        await obligation_service.sync_obligation_from_client(client)
 
     # Sync to Xero if requested and client is linked
     if sync_to_xero and client.xero_contact_id:

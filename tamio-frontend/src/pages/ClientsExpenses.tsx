@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { NeuroCard, NeuroCardContent, NeuroCardHeader, NeuroCardTitle } from '@/components/ui/neuro-card';
 import { Button } from '@/components/ui/button';
@@ -22,10 +23,11 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Plus, ArrowUpDown, Trash2, ExternalLink, CheckCircle } from 'lucide-react';
+import { Plus, ArrowUpDown, Trash2, ExternalLink, CheckCircle, Pencil } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { getClients, createClient, updateClient, deleteClient } from '@/lib/api/data';
 import { getExpenses, createExpense, updateExpense, deleteExpense } from '@/lib/api/data';
+import { getForecast } from '@/lib/api/forecast';
 import type {
   Client,
   ExpenseBucket,
@@ -38,6 +40,8 @@ import type {
   Priority,
   Frequency,
   Currency,
+  ForecastResponse,
+  ForecastEventSummary,
 } from '@/lib/api/types';
 
 interface Milestone {
@@ -49,14 +53,18 @@ interface Milestone {
 
 export default function ClientsExpenses() {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [clients, setClients] = useState<Client[]>([]);
   const [expenses, setExpenses] = useState<ExpenseBucket[]>([]);
+  const [forecast, setForecast] = useState<ForecastResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('clients');
+  const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'clients');
+  const [highlightedId, setHighlightedId] = useState<string | null>(searchParams.get('highlight'));
 
   // Client form state
   const [isClientDialogOpen, setIsClientDialogOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
+  const [isClientViewMode, setIsClientViewMode] = useState(true);
   const [clientForm, setClientForm] = useState({
     // Core info
     name: '',
@@ -96,6 +104,7 @@ export default function ClientsExpenses() {
   // Expense form state
   const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<ExpenseBucket | null>(null);
+  const [isExpenseViewMode, setIsExpenseViewMode] = useState(true);
   const [expenseForm, setExpenseForm] = useState({
     name: '',
     category: 'other' as ExpenseCategory,
@@ -118,12 +127,14 @@ export default function ClientsExpenses() {
 
     const fetchData = async () => {
       try {
-        const [clientsData, expensesData] = await Promise.all([
+        const [clientsData, expensesData, forecastData] = await Promise.all([
           getClients(user.id),
           getExpenses(user.id),
+          getForecast(user.id).catch(() => null),
         ]);
         setClients(clientsData);
         setExpenses(expensesData);
+        setForecast(forecastData);
       } catch (error) {
         console.error('Failed to fetch data:', error);
       } finally {
@@ -134,8 +145,27 @@ export default function ClientsExpenses() {
     fetchData();
   }, [user]);
 
+  // Handle URL params for highlighting
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const highlight = searchParams.get('highlight');
+
+    if (tab) {
+      setActiveTab(tab);
+    }
+    if (highlight) {
+      setHighlightedId(highlight);
+      // Clear highlight after animation and remove from URL
+      const timer = setTimeout(() => {
+        setHighlightedId(null);
+        setSearchParams({}, { replace: true });
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [searchParams, setSearchParams]);
+
   // Client handlers
-  const handleOpenClientDialog = (client?: Client) => {
+  const handleOpenClientDialog = (client?: Client, viewMode = false) => {
     if (client) {
       setEditingClient(client);
       setClientForm({
@@ -161,6 +191,7 @@ export default function ClientsExpenses() {
         // Notes
         notes: client.notes || '',
       });
+      setIsClientViewMode(viewMode);
     } else {
       setEditingClient(null);
       setClientForm({
@@ -180,6 +211,7 @@ export default function ClientsExpenses() {
         typical_amount: '',
         notes: '',
       });
+      setIsClientViewMode(false);
     }
     setIsClientDialogOpen(true);
   };
@@ -317,7 +349,7 @@ export default function ClientsExpenses() {
   };
 
   // Expense handlers
-  const handleOpenExpenseDialog = (expense?: ExpenseBucket) => {
+  const handleOpenExpenseDialog = (expense?: ExpenseBucket, viewMode = false) => {
     if (expense) {
       setEditingExpense(expense);
       setExpenseForm({
@@ -328,6 +360,7 @@ export default function ClientsExpenses() {
         priority: expense.priority as Priority,
         employee_count: expense.employee_count?.toString() || '',
       });
+      setIsExpenseViewMode(viewMode);
     } else {
       setEditingExpense(null);
       setExpenseForm({
@@ -338,6 +371,7 @@ export default function ClientsExpenses() {
         priority: 'medium',
         employee_count: '',
       });
+      setIsExpenseViewMode(false);
     }
     setIsExpenseDialogOpen(true);
   };
@@ -411,6 +445,36 @@ export default function ClientsExpenses() {
     }).format(num);
   };
 
+  // Get display amount for a client based on client type
+  const getClientDisplayAmount = (client: Client): string => {
+    const config = client.billing_config;
+
+    switch (client.client_type) {
+      case 'project':
+        // For projects, use total_value or sum of milestones
+        if (config.total_value) return config.total_value;
+        if (config.milestones && config.milestones.length > 0) {
+          const total = config.milestones.reduce((sum, m) => sum + parseFloat(m.amount || '0'), 0);
+          return total.toString();
+        }
+        return config.amount || '0';
+      case 'usage':
+        // For usage, use typical_amount or amount
+        return config.typical_amount || config.amount || '0';
+      default:
+        // For retainer and mixed, use amount
+        return config.amount || '0';
+    }
+  };
+
+  // Get display frequency for a client
+  const getClientDisplayFrequency = (client: Client): string => {
+    if (client.client_type === 'project') {
+      return 'total';
+    }
+    return client.billing_config.frequency || 'monthly';
+  };
+
   // Risk score calculation (average of payment, churn, scope risks)
   const getRiskScore = (client: Client): number => {
     const riskValues: Record<string, number> = {
@@ -451,7 +515,7 @@ export default function ClientsExpenses() {
     .sort((a, b) => {
       switch (clientSort) {
         case 'amount':
-          return parseFloat(b.billing_config.amount || '0') - parseFloat(a.billing_config.amount || '0');
+          return parseFloat(getClientDisplayAmount(b)) - parseFloat(getClientDisplayAmount(a));
         case 'due_date':
           return (a.billing_config.day_of_month || 1) - (b.billing_config.day_of_month || 1);
         case 'client_type':
@@ -495,7 +559,7 @@ export default function ClientsExpenses() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Clients & Expenses</h1>
+        <h1 className="text-2xl font-bold">Ledger</h1>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -512,6 +576,18 @@ export default function ClientsExpenses() {
               className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
             >
               Expenses
+            </TabsTrigger>
+            <TabsTrigger
+              value="transactions"
+              className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
+            >
+              Transactions
+            </TabsTrigger>
+            <TabsTrigger
+              value="projections"
+              className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
+            >
+              Projections
             </TabsTrigger>
           </TabsList>
 
@@ -563,7 +639,14 @@ export default function ClientsExpenses() {
         <TabsContent value="clients" className="space-y-4">
 
           {sortedClients.map((client) => (
-            <NeuroCard key={client.id} className="p-4">
+            <NeuroCard
+              key={client.id}
+              className={`p-4 transition-all duration-500 ${
+                highlightedId === client.id
+                  ? 'ring-2 ring-lime-dark ring-offset-2 bg-lime-dark/5'
+                  : ''
+              }`}
+            >
               <div>
                 <div className="flex items-start justify-between">
                   <div className="space-y-1">
@@ -632,8 +715,8 @@ export default function ClientsExpenses() {
                       Type: {client.client_type} | {client.currency} | {client.status}
                     </p>
                     <p className="text-lg font-medium">
-                      {formatCurrency(client.billing_config.amount || 0)}/
-                      {client.billing_config.frequency}
+                      {formatCurrency(getClientDisplayAmount(client))}/
+                      {getClientDisplayFrequency(client)}
                     </p>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground mt-2">
                       <span>
@@ -814,7 +897,14 @@ export default function ClientsExpenses() {
         {/* Expenses Tab */}
         <TabsContent value="expenses" className="space-y-4">
           {sortedExpenses.map((expense) => (
-            <NeuroCard key={expense.id} className="p-4">
+            <NeuroCard
+              key={expense.id}
+              className={`p-4 transition-all duration-500 ${
+                highlightedId === expense.id
+                  ? 'ring-2 ring-tomato ring-offset-2 bg-tomato/5'
+                  : ''
+              }`}
+            >
               <div>
                 <div className="flex items-start justify-between">
                   <div className="space-y-1">
@@ -1050,16 +1140,576 @@ export default function ClientsExpenses() {
             </NeuroCardContent>
           </NeuroCard>
         </TabsContent>
+
+        {/* Transactions Tab - Past Data */}
+        <TabsContent value="transactions" className="space-y-4">
+          <NeuroCard>
+            <NeuroCardHeader>
+              <NeuroCardTitle>Past Transactions</NeuroCardTitle>
+            </NeuroCardHeader>
+            <NeuroCardContent>
+              {!forecast ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  No transaction data available. Connect your accounting software to import past transactions.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Date</th>
+                        <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Description</th>
+                        <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Category</th>
+                        <th className="text-right py-3 px-4 font-semibold text-sm text-muted-foreground">Amount</th>
+                        <th className="text-center py-3 px-4 font-semibold text-sm text-muted-foreground">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Filter for past transactions (before today) */}
+                      {forecast.weeks
+                        .flatMap((week) => week.events)
+                        .filter((event) => new Date(event.date) < new Date())
+                        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                        .map((event: ForecastEventSummary) => {
+                          // Find matching client or expense
+                          const matchingClient = event.direction === 'in'
+                            ? clients.find((c) => c.name === event.source_name || c.id === event.source_id)
+                            : null;
+                          const matchingExpense = event.direction === 'out'
+                            ? expenses.find((e) => e.name === event.source_name || e.id === event.source_id || e.category === event.category)
+                            : null;
+
+                          const handleClick = () => {
+                            if (matchingClient) {
+                              handleOpenClientDialog(matchingClient, true);
+                            } else if (matchingExpense) {
+                              handleOpenExpenseDialog(matchingExpense, true);
+                            }
+                          };
+
+                          const isClickable = matchingClient || matchingExpense;
+
+                          return (
+                            <tr
+                              key={event.id}
+                              className={`border-b border-muted/50 hover:bg-muted/30 transition-colors ${isClickable ? 'cursor-pointer' : ''}`}
+                              onClick={isClickable ? handleClick : undefined}
+                            >
+                              <td className="py-3 px-4 text-sm">
+                                {new Date(event.date).toLocaleDateString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  year: 'numeric',
+                                })}
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className={`w-2 h-2 rounded-full ${
+                                      event.direction === 'in' ? 'bg-lime-500' : 'bg-tomato'
+                                    }`}
+                                  />
+                                  <span className={`text-sm font-medium ${isClickable ? 'text-blue-600 hover:underline' : ''}`}>
+                                    {event.source_name || event.event_type}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-4">
+                                <Badge variant="outline" className="text-xs capitalize">
+                                  {event.category || event.event_type}
+                                </Badge>
+                              </td>
+                              <td
+                                className={`py-3 px-4 text-sm font-medium text-right ${
+                                  event.direction === 'in' ? 'text-lime-600' : 'text-tomato'
+                                }`}
+                              >
+                                {event.direction === 'in' ? '+' : '-'}
+                                {formatCurrency(event.amount)}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <Badge
+                                  variant="outline"
+                                  className="text-xs border-lime-500 text-lime-600 bg-lime-50"
+                                >
+                                  Completed
+                                </Badge>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                  {forecast.weeks.flatMap((w) => w.events).filter((e) => new Date(e.date) < new Date()).length === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      No past transactions found.
+                    </div>
+                  )}
+                </div>
+              )}
+            </NeuroCardContent>
+          </NeuroCard>
+        </TabsContent>
+
+        {/* Projections Tab - Future Data */}
+        <TabsContent value="projections" className="space-y-4">
+          {!forecast ? (
+            <NeuroCard>
+              <NeuroCardContent>
+                <div className="text-center py-8 text-muted-foreground">
+                  No forecast data available. Add clients and expenses to generate cash flow projections.
+                </div>
+              </NeuroCardContent>
+            </NeuroCard>
+          ) : (
+            <>
+              {/* 13-Week Cash Flow Overview Table */}
+              <NeuroCard className="p-0 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-[#f5f0eb]">
+                        <th className="text-left py-3 px-4 font-medium text-muted-foreground sticky left-0 bg-[#f5f0eb] min-w-[180px]"></th>
+                        {forecast.weeks.slice(0, 9).map((_, idx) => (
+                          <th key={idx} className="text-center py-3 px-3 font-medium text-muted-foreground min-w-[80px]">
+                            W{idx}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Starting Balance */}
+                      <tr className="border-b border-muted/30">
+                        <td className="py-3 px-4 font-semibold sticky left-0 bg-[#f5f0eb]">Starting balance</td>
+                        {forecast.weeks.slice(0, 9).map((week, idx) => (
+                          <td key={idx} className="py-3 px-3 text-center font-semibold">
+                            {formatCurrency(week.starting_balance)}
+                          </td>
+                        ))}
+                      </tr>
+
+                      {/* Income Section Header */}
+                      <tr className="border-b border-muted/30">
+                        <td className="py-3 px-4 sticky left-0 bg-[#f5f0eb]">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lime-600 font-medium">↗ Income</span>
+                            <span className="text-muted-foreground">^</span>
+                          </div>
+                        </td>
+                        {forecast.weeks.slice(0, 9).map((week, idx) => (
+                          <td key={idx} className="py-3 px-3 text-center text-lime-600 font-medium">
+                            {parseFloat(week.cash_in) > 0 ? formatCurrency(week.cash_in) : '$0'}
+                          </td>
+                        ))}
+                      </tr>
+
+                      {/* Income Breakdown by Client - with links */}
+                      {(() => {
+                        // Get unique income sources across all weeks with source_id
+                        const incomeSources = new Map<string, { weekAmounts: Map<number, number>; sourceId?: string }>();
+                        forecast.weeks.slice(0, 9).forEach((week, weekIdx) => {
+                          week.events
+                            .filter((e) => e.direction === 'in')
+                            .forEach((event) => {
+                              const name = event.source_name || event.event_type;
+                              if (!incomeSources.has(name)) {
+                                incomeSources.set(name, { weekAmounts: new Map(), sourceId: event.source_id });
+                              }
+                              const current = incomeSources.get(name)!.weekAmounts.get(weekIdx) || 0;
+                              incomeSources.get(name)!.weekAmounts.set(weekIdx, current + parseFloat(event.amount));
+                            });
+                        });
+
+                        return Array.from(incomeSources.entries()).map(([name, { weekAmounts, sourceId }]) => {
+                          const matchingClient = clients.find((c) => c.name === name || c.id === sourceId);
+                          const handleClick = matchingClient
+                            ? () => {
+                                handleOpenClientDialog(matchingClient, true);
+                              }
+                            : undefined;
+
+                          return (
+                            <tr key={name} className="border-b border-muted/20">
+                              <td className="py-2 px-4 pl-8 text-sm sticky left-0 bg-[#f5f0eb]">
+                                <span
+                                  className={`${matchingClient ? 'text-blue-600 hover:underline cursor-pointer' : 'text-muted-foreground'}`}
+                                  onClick={handleClick}
+                                >
+                                  + {name}
+                                </span>
+                              </td>
+                              {forecast.weeks.slice(0, 9).map((_, idx) => (
+                                <td key={idx} className="py-2 px-3 text-center text-sm text-lime-600">
+                                  {weekAmounts.has(idx) ? formatCurrency(weekAmounts.get(idx)!) : '$0'}
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        });
+                      })()}
+
+                      {/* Costs Section Header */}
+                      <tr className="border-b border-muted/30">
+                        <td className="py-3 px-4 sticky left-0 bg-[#f5f0eb]">
+                          <div className="flex items-center gap-2">
+                            <span className="text-tomato font-medium">↙ Costs</span>
+                            <span className="text-muted-foreground">^</span>
+                          </div>
+                        </td>
+                        {forecast.weeks.slice(0, 9).map((week, idx) => (
+                          <td key={idx} className="py-3 px-3 text-center text-tomato font-medium">
+                            {parseFloat(week.cash_out) > 0 ? formatCurrency(week.cash_out) : '$0'}
+                          </td>
+                        ))}
+                      </tr>
+
+                      {/* Costs Breakdown by Category - with links */}
+                      {(() => {
+                        // Get unique expense categories across all weeks
+                        const expenseCategories = new Map<string, { weekAmounts: Map<number, number>; sourceId?: string; sourceName?: string }>();
+                        forecast.weeks.slice(0, 9).forEach((week, weekIdx) => {
+                          week.events
+                            .filter((e) => e.direction === 'out')
+                            .forEach((event) => {
+                              const category = event.category || event.source_name || event.event_type;
+                              if (!expenseCategories.has(category)) {
+                                expenseCategories.set(category, { weekAmounts: new Map(), sourceId: event.source_id, sourceName: event.source_name });
+                              }
+                              const current = expenseCategories.get(category)!.weekAmounts.get(weekIdx) || 0;
+                              expenseCategories.get(category)!.weekAmounts.set(weekIdx, current + parseFloat(event.amount));
+                            });
+                        });
+
+                        return Array.from(expenseCategories.entries()).map(([category, { weekAmounts, sourceId, sourceName }]) => {
+                          const matchingExpense = expenses.find((e) => e.name === sourceName || e.id === sourceId || e.category === category);
+                          const handleClick = matchingExpense
+                            ? () => {
+                                handleOpenExpenseDialog(matchingExpense, true);
+                              }
+                            : undefined;
+
+                          return (
+                            <tr key={category} className="border-b border-muted/20">
+                              <td className="py-2 px-4 pl-8 text-sm sticky left-0 bg-[#f5f0eb] capitalize">
+                                <span
+                                  className={`${matchingExpense ? 'text-blue-600 hover:underline cursor-pointer' : 'text-muted-foreground'}`}
+                                  onClick={handleClick}
+                                >
+                                  - {category}
+                                </span>
+                              </td>
+                              {forecast.weeks.slice(0, 9).map((_, idx) => (
+                                <td key={idx} className="py-2 px-3 text-center text-sm text-tomato">
+                                  {weekAmounts.has(idx) ? formatCurrency(weekAmounts.get(idx)!) : '$0'}
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        });
+                      })()}
+
+                      {/* Ending Balance */}
+                      <tr className="bg-[#f5f0eb]">
+                        <td className="py-3 px-4 font-semibold sticky left-0 bg-[#f5f0eb]">Ending balance</td>
+                        {forecast.weeks.slice(0, 9).map((week, idx) => (
+                          <td
+                            key={idx}
+                            className={`py-3 px-3 text-center font-semibold ${
+                              parseFloat(week.ending_balance) < 0 ? 'text-tomato' : 'text-lime-600'
+                            }`}
+                          >
+                            {formatCurrency(week.ending_balance)}
+                          </td>
+                        ))}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </NeuroCard>
+
+              {/* Projected Transactions */}
+              <NeuroCard>
+                <NeuroCardHeader>
+                  <NeuroCardTitle>Projected Transactions</NeuroCardTitle>
+                </NeuroCardHeader>
+                <NeuroCardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Date</th>
+                          <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Description</th>
+                          <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Category</th>
+                          <th className="text-right py-3 px-4 font-semibold text-sm text-muted-foreground">Amount</th>
+                          <th className="text-center py-3 px-4 font-semibold text-sm text-muted-foreground">Confidence</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {/* Filter for future transactions (today and after) */}
+                        {forecast.weeks
+                          .flatMap((week) => week.events)
+                          .filter((event) => new Date(event.date) >= new Date())
+                          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                          .map((event: ForecastEventSummary) => {
+                            // Find matching client or expense
+                            const matchingClient = event.direction === 'in'
+                              ? clients.find((c) => c.name === event.source_name || c.id === event.source_id)
+                              : null;
+                            const matchingExpense = event.direction === 'out'
+                              ? expenses.find((e) => e.name === event.source_name || e.id === event.source_id || e.category === event.category)
+                              : null;
+
+                            const handleClick = () => {
+                              if (matchingClient) {
+                                handleOpenClientDialog(matchingClient, true);
+                              } else if (matchingExpense) {
+                                handleOpenExpenseDialog(matchingExpense, true);
+                              }
+                            };
+
+                            const isClickable = matchingClient || matchingExpense;
+
+                            return (
+                              <tr
+                                key={event.id}
+                                className={`border-b border-muted/50 hover:bg-muted/30 transition-colors ${isClickable ? 'cursor-pointer' : ''}`}
+                                onClick={isClickable ? handleClick : undefined}
+                              >
+                                <td className="py-3 px-4 text-sm">
+                                  {new Date(event.date).toLocaleDateString('en-US', {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    year: 'numeric',
+                                  })}
+                                </td>
+                                <td className="py-3 px-4">
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={`w-2 h-2 rounded-full ${
+                                        event.direction === 'in' ? 'bg-lime-500' : 'bg-tomato'
+                                      }`}
+                                    />
+                                    <span className={`text-sm font-medium ${isClickable ? 'text-blue-600 hover:underline' : ''}`}>
+                                      {event.source_name || event.event_type}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="py-3 px-4">
+                                  <Badge variant="outline" className="text-xs capitalize">
+                                    {event.category || event.event_type}
+                                  </Badge>
+                                </td>
+                                <td
+                                  className={`py-3 px-4 text-sm font-medium text-right ${
+                                    event.direction === 'in' ? 'text-lime-600' : 'text-tomato'
+                                  }`}
+                                >
+                                  {event.direction === 'in' ? '+' : '-'}
+                                  {formatCurrency(event.amount)}
+                                </td>
+                                <td className="py-3 px-4 text-center">
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-xs ${
+                                      event.confidence === 'high'
+                                        ? 'border-lime-500 text-lime-600 bg-lime-50'
+                                        : event.confidence === 'medium'
+                                        ? 'border-yellow-500 text-yellow-600 bg-yellow-50'
+                                        : 'border-gray-300 text-gray-500 bg-gray-50'
+                                    }`}
+                                  >
+                                    {event.confidence}
+                                  </Badge>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                    {forecast.weeks.flatMap((w) => w.events).filter((e) => new Date(e.date) >= new Date()).length === 0 && (
+                      <div className="text-center py-8 text-muted-foreground">
+                        No projected transactions found.
+                      </div>
+                    )}
+                  </div>
+                </NeuroCardContent>
+              </NeuroCard>
+            </>
+          )}
+        </TabsContent>
       </Tabs>
 
-      {/* Client Edit Dialog */}
+      {/* Client View/Edit Dialog */}
       <Dialog open={isClientDialogOpen && !!editingClient} onOpenChange={setIsClientDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Edit Client</DialogTitle>
-            <DialogDescription>Update client information and billing details</DialogDescription>
+          <DialogHeader className="flex flex-row items-start justify-between">
+            <div>
+              <DialogTitle>{isClientViewMode ? 'Client Details' : 'Edit Client'}</DialogTitle>
+              <DialogDescription>
+                {isClientViewMode ? 'View client information and billing details' : 'Update client information and billing details'}
+              </DialogDescription>
+            </div>
+            {isClientViewMode && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsClientViewMode(false)}
+                className="ml-auto"
+              >
+                <Pencil className="h-4 w-4 mr-2" />
+                Edit
+              </Button>
+            )}
           </DialogHeader>
-          <div className="space-y-6">
+
+          {isClientViewMode ? (
+            /* View Mode */
+            <div className="space-y-6">
+              {/* Core Client Information */}
+              <div className="space-y-4">
+                <h4 className="text-sm font-medium text-muted-foreground">Core Information</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Client Name</Label>
+                    <p className="font-medium">{clientForm.name}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Client Type</Label>
+                    <p className="font-medium capitalize">{clientForm.client_type}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Currency</Label>
+                    <p className="font-medium">{clientForm.currency}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Status</Label>
+                    <Badge variant={clientForm.status === 'active' ? 'default' : 'secondary'} className="capitalize">
+                      {clientForm.status}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Risk Indicators */}
+              <div className="space-y-4">
+                <h4 className="text-sm font-medium text-muted-foreground">Risk Indicators</h4>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Payment Behavior</Label>
+                    <Badge
+                      variant="outline"
+                      className={`capitalize ${
+                        clientForm.payment_behavior === 'delayed' ? 'border-tomato text-tomato' :
+                        clientForm.payment_behavior === 'on_time' ? 'border-lime-600 text-lime-600' : ''
+                      }`}
+                    >
+                      {clientForm.payment_behavior.replace('_', ' ')}
+                    </Badge>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Churn Risk</Label>
+                    <Badge
+                      variant="outline"
+                      className={`capitalize ${
+                        clientForm.churn_risk === 'high' ? 'border-tomato text-tomato' :
+                        clientForm.churn_risk === 'medium' ? 'border-yellow-500 text-yellow-600' :
+                        'border-lime-600 text-lime-600'
+                      }`}
+                    >
+                      {clientForm.churn_risk}
+                    </Badge>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Scope Risk</Label>
+                    <Badge
+                      variant="outline"
+                      className={`capitalize ${
+                        clientForm.scope_risk === 'high' ? 'border-tomato text-tomato' :
+                        clientForm.scope_risk === 'medium' ? 'border-yellow-500 text-yellow-600' :
+                        'border-lime-600 text-lime-600'
+                      }`}
+                    >
+                      {clientForm.scope_risk}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Billing Structure */}
+              <div className="space-y-4">
+                <h4 className="text-sm font-medium text-muted-foreground">
+                  Billing Structure
+                  <span className="ml-2 text-xs font-normal">
+                    ({clientForm.client_type === 'retainer' && 'Recurring Revenue'}
+                    {clientForm.client_type === 'project' && 'Fixed-scope / Milestone'}
+                    {clientForm.client_type === 'usage' && 'Variable / Consumption'}
+                    {clientForm.client_type === 'mixed' && 'Combined Billing'})
+                  </span>
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">
+                      {clientForm.client_type === 'project' ? 'Total Project Value' :
+                       clientForm.client_type === 'usage' ? 'Typical Amount' : 'Amount'}
+                    </Label>
+                    <p className="font-medium text-lg">{formatCurrency(clientForm.amount || 0)}</p>
+                  </div>
+                  {clientForm.client_type !== 'project' && (
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Frequency</Label>
+                      <p className="font-medium capitalize">{clientForm.frequency}</p>
+                    </div>
+                  )}
+                  {(clientForm.client_type === 'retainer' || clientForm.client_type === 'mixed') && (
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Billing Day</Label>
+                      <p className="font-medium">{clientForm.day_of_month}{['1','21','31'].includes(clientForm.day_of_month) ? 'st' : ['2','22'].includes(clientForm.day_of_month) ? 'nd' : ['3','23'].includes(clientForm.day_of_month) ? 'rd' : 'th'} of month</p>
+                    </div>
+                  )}
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Payment Terms</Label>
+                    <p className="font-medium capitalize">{clientForm.payment_terms.replace('_', ' ')}</p>
+                  </div>
+                </div>
+
+                {/* Milestones for project clients */}
+                {clientForm.client_type === 'project' && clientForm.milestones.length > 0 && (
+                  <div className="space-y-2 mt-4">
+                    <Label className="text-xs text-muted-foreground">Payment Milestones</Label>
+                    <div className="space-y-2">
+                      {clientForm.milestones.map((milestone, index) => (
+                        <div key={index} className="flex items-center justify-between p-3 border rounded-md bg-muted/30">
+                          <div>
+                            <p className="font-medium">{milestone.name || `Milestone ${index + 1}`}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {milestone.expected_date ? new Date(milestone.expected_date).toLocaleDateString() : 'Date TBD'} - {milestone.trigger_type === 'date_based' ? 'Date-based' : 'Delivery-based'}
+                            </p>
+                          </div>
+                          <p className="font-semibold">{formatCurrency(milestone.amount || 0)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {clientForm.notes && (
+                <>
+                  <Separator />
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Notes</Label>
+                    <p className="text-sm">{clientForm.notes}</p>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            /* Edit Mode */
+            <div className="space-y-6">
             {/* Core Client Information */}
             <div className="space-y-4">
               <h4 className="text-sm font-medium text-muted-foreground">Core Information</h4>
@@ -1545,58 +2195,121 @@ export default function ClientsExpenses() {
               Save Changes
             </Button>
           </div>
+          )}
         </DialogContent>
       </Dialog>
 
-      {/* Expense Edit Dialog */}
+      {/* Expense View/Edit Dialog */}
       <Dialog open={isExpenseDialogOpen && !!editingExpense} onOpenChange={setIsExpenseDialogOpen}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Expense</DialogTitle>
-            <DialogDescription>Update expense information</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Name</Label>
-              <Input
-                value={expenseForm.name}
-                onChange={(e) => setExpenseForm({ ...expenseForm, name: e.target.value })}
-              />
+          <DialogHeader className="flex flex-row items-start justify-between">
+            <div>
+              <DialogTitle>{isExpenseViewMode ? 'Expense Details' : 'Edit Expense'}</DialogTitle>
+              <DialogDescription>
+                {isExpenseViewMode ? 'View expense information' : 'Update expense information'}
+              </DialogDescription>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            {isExpenseViewMode && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsExpenseViewMode(false)}
+                className="ml-auto"
+              >
+                <Pencil className="h-4 w-4 mr-2" />
+                Edit
+              </Button>
+            )}
+          </DialogHeader>
+
+          {isExpenseViewMode ? (
+            /* View Mode */
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Name</Label>
+                <p className="font-medium text-lg">{expenseForm.name}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Monthly Amount</Label>
+                  <p className="font-medium text-lg">{formatCurrency(expenseForm.monthly_amount)}</p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Category</Label>
+                  <Badge variant="outline" className="capitalize">{expenseForm.category}</Badge>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Type</Label>
+                  <Badge variant={expenseForm.bucket_type === 'fixed' ? 'secondary' : 'outline'} className="capitalize">
+                    {expenseForm.bucket_type}
+                  </Badge>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Priority</Label>
+                  <Badge
+                    variant="outline"
+                    className={`capitalize ${
+                      expenseForm.priority === 'essential' ? 'border-tomato text-tomato' :
+                      expenseForm.priority === 'important' ? 'border-yellow-500 text-yellow-600' :
+                      'border-gray-300 text-gray-500'
+                    }`}
+                  >
+                    {expenseForm.priority}
+                  </Badge>
+                </div>
+                {expenseForm.employee_count && (
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Number of Employees</Label>
+                    <p className="font-medium">{expenseForm.employee_count}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            /* Edit Mode */
+            <div className="space-y-4">
               <div className="space-y-2">
-                <Label>Monthly Amount</Label>
+                <Label>Name</Label>
                 <Input
-                  type="number"
-                  value={expenseForm.monthly_amount}
-                  onChange={(e) =>
-                    setExpenseForm({ ...expenseForm, monthly_amount: e.target.value })
-                  }
+                  value={expenseForm.name}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, name: e.target.value })}
                 />
               </div>
-              <div className="space-y-2">
-                <Label>Priority</Label>
-                <Select
-                  value={expenseForm.priority}
-                  onValueChange={(v: Priority) =>
-                    setExpenseForm({ ...expenseForm, priority: v })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="essential">Essential</SelectItem>
-                    <SelectItem value="important">Important</SelectItem>
-                    <SelectItem value="discretionary">Discretionary</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Monthly Amount</Label>
+                  <Input
+                    type="number"
+                    value={expenseForm.monthly_amount}
+                    onChange={(e) =>
+                      setExpenseForm({ ...expenseForm, monthly_amount: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Priority</Label>
+                  <Select
+                    value={expenseForm.priority}
+                    onValueChange={(v: Priority) =>
+                      setExpenseForm({ ...expenseForm, priority: v })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="essential">Essential</SelectItem>
+                      <SelectItem value="important">Important</SelectItem>
+                      <SelectItem value="discretionary">Discretionary</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
+              <Button className="w-full" onClick={handleSaveExpense}>
+                Save Changes
+              </Button>
             </div>
-            <Button className="w-full" onClick={handleSaveExpense}>
-              Save Changes
-            </Button>
-          </div>
+          )}
         </DialogContent>
       </Dialog>
 

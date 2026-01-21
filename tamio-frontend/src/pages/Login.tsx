@@ -6,15 +6,16 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NeuroCard, NeuroCardContent, NeuroCardDescription, NeuroCardHeader, NeuroCardTitle } from '@/components/ui/neuro-card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Eye, EyeOff, Play } from 'lucide-react';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, demoLogin } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isDemoLoading, setIsDemoLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -32,13 +33,26 @@ export default function Login() {
     }
   };
 
+  const handleDemoLogin = async () => {
+    setError('');
+    setIsDemoLoading(true);
+
+    try {
+      await demoLogin();
+      navigate('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Demo login failed');
+    } finally {
+      setIsDemoLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-foreground">TAMIO</h1>
-          <p className="text-muted-foreground mt-2">Decision-safety for founders</p>
+          <img src="/logo-dark.svg" alt="Tamio" className="h-10 mx-auto" />
         </div>
 
         <NeuroCard>
@@ -107,7 +121,7 @@ export default function Login() {
                 </div>
               </div>
 
-              <Button type="submit" className="w-full" disabled={isLoading}>
+              <Button type="submit" className="w-full" disabled={isLoading || isDemoLoading}>
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -118,6 +132,32 @@ export default function Login() {
                 )}
               </Button>
             </form>
+
+            {/* Demo Account Section */}
+            <div className="mt-6 pt-6 border-t border-border/40">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleDemoLogin}
+                disabled={isLoading || isDemoLoading}
+                className="w-full"
+              >
+                {isDemoLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Loading demo...
+                  </>
+                ) : (
+                  <>
+                    <Play className="mr-2 h-4 w-4" />
+                    Try Demo Account
+                  </>
+                )}
+              </Button>
+              <p className="text-xs text-muted-foreground text-center mt-2">
+                Explore Tamio with sample data - no signup required
+              </p>
+            </div>
 
             <div className="mt-6 text-center text-sm">
               <span className="text-muted-foreground">Don't have an account? </span>

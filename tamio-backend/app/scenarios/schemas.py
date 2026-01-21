@@ -57,8 +57,10 @@ class ScenarioCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     scenario_type: ScenarioType
-    entry_path: str = "user_defined"  # "user_defined" or "tamio_suggested"
+    entry_path: str = "user_defined"  # "user_defined", "tamio_suggested", or "alert_derived"
     suggested_reason: Optional[str] = None
+    source_alert_id: Optional[str] = None  # Link to originating detection alert
+    source_detection_type: Optional[str] = None  # Detection type that triggered suggestion
     scope_config: Dict[str, Any]
     parameters: Dict[str, Any]
     parent_scenario_id: Optional[str] = None
@@ -84,6 +86,8 @@ class ScenarioResponse(BaseModel):
     status: ScenarioStatus
     entry_path: str
     suggested_reason: Optional[str]
+    source_alert_id: Optional[str]  # Link to originating detection alert
+    source_detection_type: Optional[str]  # Detection type that triggered suggestion
     scope_config: Dict[str, Any]
     parameters: Dict[str, Any]
     linked_scenarios: List[Dict[str, Any]]

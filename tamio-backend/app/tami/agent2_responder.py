@@ -1,22 +1,50 @@
-"""Agent2: Responder - Answers user questions using OpenAI with function calling.
+"""Agent2: Responder - Answers user questions using Claude (Anthropic) with function calling.
 
 This agent receives the compiled prompt from Agent1 and:
-1. Calls OpenAI API with function calling enabled
+1. Calls Anthropic API with function calling enabled
 2. If a tool is called, executes it and returns the result
 3. Returns a structured response in the required format
 """
 import json
 from typing import Dict, Any, List, Optional, Tuple, AsyncIterator
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 
 from app.config import settings
 from app.tami.schemas import TAMIResponse, TAMIMode, UIHints, SuggestedAction
 
 
-# Initialize OpenAI client
-def get_openai_client() -> AsyncOpenAI:
-    """Get the OpenAI client."""
-    return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+# Initialize Anthropic client
+def get_anthropic_client() -> AsyncAnthropic:
+    """Get the Anthropic client."""
+    return AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+
+def _convert_tools_to_anthropic_format(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert OpenAI-style tool definitions to Anthropic format."""
+    anthropic_tools = []
+    for tool in tools:
+        if tool.get("type") == "function":
+            func = tool["function"]
+            anthropic_tools.append({
+                "name": func["name"],
+                "description": func.get("description", ""),
+                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
+            })
+    return anthropic_tools
+
+
+def _extract_system_message(messages: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """Extract system message from messages list (Anthropic requires it separately)."""
+    system_content = ""
+    other_messages = []
+
+    for msg in messages:
+        if msg.get("role") == "system":
+            system_content = msg.get("content", "")
+        else:
+            other_messages.append(msg)
+
+    return system_content, other_messages
 
 
 async def call_openai_streaming(
@@ -25,7 +53,7 @@ async def call_openai_streaming(
     use_fast_model: bool = False,
 ) -> AsyncIterator[str]:
     """
-    Call OpenAI API with streaming enabled.
+    Call Anthropic API with streaming enabled.
 
     Yields chunks of the response as they arrive.
     Note: When streaming, we don't use JSON response format to allow
@@ -34,31 +62,35 @@ async def call_openai_streaming(
     Args:
         messages: The conversation messages
         tools: Available tools for function calling
-        use_fast_model: If True, use gpt-4o-mini for faster responses
+        use_fast_model: If True, use claude-haiku for faster responses
     """
-    client = get_openai_client()
+    client = get_anthropic_client()
 
     # Select model based on complexity
-    model = settings.OPENAI_MODEL_FAST if use_fast_model else settings.OPENAI_MODEL
+    model = settings.ANTHROPIC_MODEL_FAST if use_fast_model else settings.ANTHROPIC_MODEL
+
+    # Extract system message (Anthropic requires it separately)
+    system_content, conversation_messages = _extract_system_message(messages)
 
     kwargs = {
         "model": model,
-        "messages": messages,
-        "max_tokens": settings.OPENAI_MAX_TOKENS,
-        "stream": True,
+        "max_tokens": settings.ANTHROPIC_MAX_TOKENS,
+        "messages": conversation_messages,
     }
+
+    if system_content:
+        kwargs["system"] = system_content
 
     # Only add tools for complex queries (fast model doesn't need them)
     if tools and not use_fast_model:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"
+        anthropic_tools = _convert_tools_to_anthropic_format(tools)
+        if anthropic_tools:
+            kwargs["tools"] = anthropic_tools
 
     try:
-        stream = await client.chat.completions.create(**kwargs)
-
-        async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        async with client.messages.stream(**kwargs) as stream:
+            async for text in stream.text_stream:
+                yield text
 
     except Exception as e:
         yield f"Error: {str(e)}"
@@ -70,45 +102,51 @@ async def call_openai(
     response_format: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """
-    Call OpenAI API with function calling enabled.
+    Call Anthropic API with function calling enabled.
 
     Returns:
         Tuple of (response_content, tool_call) where tool_call is None if no tool was called
     """
-    client = get_openai_client()
+    client = get_anthropic_client()
+
+    # Extract system message (Anthropic requires it separately)
+    system_content, conversation_messages = _extract_system_message(messages)
 
     # Build request kwargs
     kwargs = {
-        "model": settings.OPENAI_MODEL,
-        "messages": messages,
-        "max_tokens": settings.OPENAI_MAX_TOKENS,
+        "model": settings.ANTHROPIC_MODEL,
+        "max_tokens": settings.ANTHROPIC_MAX_TOKENS,
+        "messages": conversation_messages,
     }
+
+    if system_content:
+        kwargs["system"] = system_content
 
     # Add tools if provided
     if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"
-
-    # Add response format if provided
-    if response_format:
-        kwargs["response_format"] = response_format
+        anthropic_tools = _convert_tools_to_anthropic_format(tools)
+        if anthropic_tools:
+            kwargs["tools"] = anthropic_tools
 
     try:
-        response = await client.chat.completions.create(**kwargs)
-
-        message = response.choices[0].message
+        response = await client.messages.create(**kwargs)
 
         # Check if a tool was called
-        if message.tool_calls:
-            tool_call = message.tool_calls[0]
-            return None, {
-                "id": tool_call.id,
-                "name": tool_call.function.name,
-                "arguments": json.loads(tool_call.function.arguments)
-            }
+        for content_block in response.content:
+            if content_block.type == "tool_use":
+                return None, {
+                    "id": content_block.id,
+                    "name": content_block.name,
+                    "arguments": content_block.input
+                }
 
-        # Return content
-        return message.content, None
+        # Extract text content
+        text_content = ""
+        for content_block in response.content:
+            if content_block.type == "text":
+                text_content += content_block.text
+
+        return text_content, None
 
     except Exception as e:
         # Return error response
@@ -134,37 +172,52 @@ async def generate_response(
     If tool_result is provided, it's added to the messages and a new
     response is generated without tool calling enabled.
     """
-    client = get_openai_client()
+    client = get_anthropic_client()
 
-    # If we have a tool result, add it to messages
+    # Extract system message
+    system_content, conversation_messages = _extract_system_message(messages)
+
+    # If we have a tool result, add it to messages in Anthropic format
     if tool_result:
-        messages.append({
+        # Add assistant message with tool use
+        conversation_messages.append({
             "role": "assistant",
-            "content": None,
-            "tool_calls": [{
+            "content": [{
+                "type": "tool_use",
                 "id": tool_result["tool_call_id"],
-                "type": "function",
-                "function": {
-                    "name": tool_result["tool_name"],
-                    "arguments": json.dumps(tool_result["tool_args"])
-                }
+                "name": tool_result["tool_name"],
+                "input": tool_result["tool_args"]
             }]
         })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_result["tool_call_id"],
-            "content": json.dumps(tool_result["result"])
+        # Add tool result
+        conversation_messages.append({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_result["tool_call_id"],
+                "content": json.dumps(tool_result["result"])
+            }]
         })
 
-    try:
-        response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=messages,
-            max_tokens=settings.OPENAI_MAX_TOKENS,
-            response_format={"type": "json_object"},
-        )
+    kwargs = {
+        "model": settings.ANTHROPIC_MODEL,
+        "max_tokens": settings.ANTHROPIC_MAX_TOKENS,
+        "messages": conversation_messages,
+    }
 
-        return response.choices[0].message.content
+    if system_content:
+        kwargs["system"] = system_content
+
+    try:
+        response = await client.messages.create(**kwargs)
+
+        # Extract text content
+        text_content = ""
+        for content_block in response.content:
+            if content_block.type == "text":
+                text_content += content_block.text
+
+        return text_content
 
     except Exception as e:
         error_response = {
@@ -180,7 +233,7 @@ async def generate_response(
 
 def parse_response(response_content: str) -> TAMIResponse:
     """
-    Parse the OpenAI response into a TAMIResponse object.
+    Parse the Anthropic response into a TAMIResponse object.
 
     Handles cases where the response might not be valid JSON or
     might be missing required fields.

@@ -12,7 +12,7 @@ from decimal import Decimal
 
 from app.data.models import User, CashAccount, Client, ExpenseBucket, CashEvent
 from app.scenarios.models import Scenario, FinancialRule, RuleEvaluation
-from app.forecast.engine import calculate_13_week_forecast
+from app.forecast.engine_v2 import calculate_forecast_v2 as calculate_13_week_forecast
 from app.scenarios.engine import compute_scenario_forecast
 from app.scenarios.rule_engine import evaluate_rules
 from app.tami.schemas import (
@@ -23,6 +23,8 @@ from app.tami.schemas import (
     CurrentScenarioContext,
     TriggeredScenarioSummary,
     BehaviorInsightsSummary,
+    BusinessProfileSummary,
+    AlertSummary,
 )
 
 
@@ -78,6 +80,19 @@ async def build_context(
     # Load behavior insights and triggered scenarios (Phase 4)
     behavior_insights, triggered_scenarios = await _load_behavior_context(db, user_id)
 
+    # Load active detection alerts (V4)
+    active_alerts = await _load_active_alerts(db, user_id)
+
+    # Build business profile summary
+    business_profile = None
+    if user.industry or user.revenue_range:
+        business_profile = BusinessProfileSummary(
+            industry=user.industry,
+            subcategory=user.subcategory,
+            revenue_range=user.revenue_range,
+            base_currency=user.base_currency,
+        )
+
     # Build forecast weeks summary
     forecast_weeks = [
         ForecastWeekSummary(
@@ -110,6 +125,7 @@ async def build_context(
 
     return ContextPayload(
         user_id=user_id,
+        business_profile=business_profile,
         starting_cash=str(cash_position.get("balance", 0)),
         as_of_date=cash_position.get("as_of_date", date.today().isoformat()),
         base_forecast={
@@ -129,6 +145,7 @@ async def build_context(
         expenses_summary=expenses_summary,
         behavior_insights=behavior_insights,
         triggered_scenarios=triggered_scenarios,
+        active_alerts=active_alerts,
         generated_at=datetime.utcnow().isoformat(),
     )
 
@@ -334,6 +351,50 @@ async def _load_expenses_summary(db: AsyncSession, user_id: str) -> List[Dict[st
     ]
 
 
+async def _load_active_alerts(db: AsyncSession, user_id: str) -> List[AlertSummary]:
+    """Load active detection alerts for the user."""
+    try:
+        from app.detection.models import DetectionAlert, AlertStatus
+
+        result = await db.execute(
+            select(DetectionAlert).where(
+                DetectionAlert.user_id == user_id,
+                DetectionAlert.status.in_([
+                    AlertStatus.ACTIVE,
+                    AlertStatus.ACKNOWLEDGED,
+                    AlertStatus.PREPARING
+                ])
+            ).order_by(DetectionAlert.deadline.asc().nullslast())
+        )
+        alerts = result.scalars().all()
+
+        alert_summaries = []
+        for alert in alerts:
+            # Calculate days until deadline
+            days_until = None
+            if alert.deadline:
+                delta = alert.deadline.date() - date.today()
+                days_until = delta.days
+
+            alert_summaries.append(AlertSummary(
+                alert_id=alert.id,
+                title=alert.title,
+                description=alert.description,
+                detection_type=alert.detection_type.value if hasattr(alert.detection_type, 'value') else str(alert.detection_type),
+                severity=alert.severity.value if hasattr(alert.severity, 'value') else str(alert.severity),
+                status=alert.status.value if hasattr(alert.status, 'value') else str(alert.status),
+                cash_impact=alert.cash_impact,
+                deadline=alert.deadline.isoformat() if alert.deadline else None,
+                days_until_deadline=days_until,
+                context_data=alert.context_data or {}
+            ))
+
+        return alert_summaries
+    except Exception:
+        # Detection module might not be fully set up yet
+        return []
+
+
 async def _load_behavior_context(
     db: AsyncSession,
     user_id: str
@@ -460,6 +521,24 @@ def context_to_json(context: ContextPayload) -> Dict[str, Any]:
 def format_context_for_prompt(context: ContextPayload) -> str:
     """Format context as a structured string for the prompt."""
     lines = []
+
+    # Business profile context
+    if context.business_profile:
+        bp = context.business_profile
+        lines.append("=== BUSINESS PROFILE ===")
+        industry_label = bp.industry.replace("_", " ").title() if bp.industry else "Unknown"
+        lines.append(f"Industry: {industry_label}")
+        if bp.subcategory:
+            subcategory_label = bp.subcategory.replace("_", " ").title()
+            lines.append(f"Subcategory: {subcategory_label}")
+        if bp.revenue_range:
+            lines.append(f"Revenue Range: ${bp.revenue_range}")
+        lines.append(f"Operating Currency: {bp.base_currency}")
+        lines.append("")
+        lines.append("Use this context to provide industry-specific insights and comparisons.")
+        lines.append("Reference typical payment terms for this industry when relevant.")
+        lines.append("")
+
     lines.append("=== CURRENT FINANCIAL STATE ===")
     lines.append(f"Starting Cash: ${context.starting_cash}")
     lines.append(f"As of Date: {context.as_of_date}")
@@ -578,6 +657,28 @@ def format_context_for_prompt(context: ContextPayload) -> str:
             lines.append(f"   Status: {ts.status}, Severity: {ts.severity}")
             if ts.recommended_actions:
                 lines.append(f"   Actions: {', '.join(ts.recommended_actions[:2])}")
+        lines.append("")
+
+    # Active Detection Alerts (V4)
+    if context.active_alerts:
+        lines.append("=== ACTIVE ALERTS ===")
+        lines.append(f"({len(context.active_alerts)} alerts requiring attention)")
+        for alert in context.active_alerts:
+            severity_icon = "🚨" if alert.severity == "emergency" else "⚠️" if alert.severity == "this_week" else "ℹ️"
+            deadline_str = ""
+            if alert.days_until_deadline is not None:
+                if alert.days_until_deadline <= 0:
+                    deadline_str = " - DUE TODAY/OVERDUE"
+                elif alert.days_until_deadline == 1:
+                    deadline_str = " - due tomorrow"
+                else:
+                    deadline_str = f" - due in {alert.days_until_deadline} days"
+            lines.append(f"{severity_icon} {alert.title}{deadline_str}")
+            if alert.cash_impact:
+                lines.append(f"   Amount: ${alert.cash_impact:,.0f}")
+            if alert.description:
+                lines.append(f"   Details: {alert.description}")
+            lines.append(f"   Type: {alert.detection_type}, Status: {alert.status}")
         lines.append("")
 
     return "\n".join(lines)

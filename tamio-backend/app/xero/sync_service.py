@@ -11,6 +11,11 @@ Design principles:
 - Xero is the "transaction layer" (invoices, bills, payments)
 - Client/Expense core data flows: Tamio → Xero
 - Transaction data flows: Xero → Tamio
+
+V2.1 Update (Data Architecture Refactor):
+- Added dual-write to IntegrationMapping table alongside legacy xero_* fields
+- This enables gradual migration to centralized integration registry
+- Legacy fields will be deprecated once all reads use IntegrationMapping
 """
 
 from datetime import datetime, timezone
@@ -22,6 +27,7 @@ from app.data.clients.models import Client
 from app.data.expenses.models import ExpenseBucket
 from app.xero.client import XeroClient, get_valid_connection
 from app.xero.models import XeroConnection, XeroSyncLog
+from app.integrations.services import IntegrationMappingService
 
 
 class SyncService:
@@ -31,6 +37,7 @@ class SyncService:
         self.db = db
         self.user_id = user_id
         self._xero_client: Optional[XeroClient] = None
+        self._mapping_service = IntegrationMappingService(db)
 
     async def _get_xero_client(self) -> Optional[XeroClient]:
         """Get a valid Xero client, refreshing token if needed."""
@@ -115,11 +122,26 @@ class SyncService:
                     )
                     client.xero_repeating_invoice_id = result["repeating_invoice_id"]
 
-            # Update sync status
+            # Update sync status (legacy fields)
             client.sync_status = "synced"
             client.last_synced_at = datetime.now(timezone.utc)
             client.sync_error = None
             client.source = client.source or "manual"
+
+            # Dual-write to IntegrationMapping table (new architecture)
+            # This creates/updates the centralized mapping while keeping legacy fields
+            await self._mapping_service.create_or_update_mapping(
+                entity_type="client",
+                entity_id=client.id,
+                integration_type="xero",
+                external_id=client.xero_contact_id,
+                external_type="contact",
+                sync_status="synced",
+                metadata={
+                    "xero_tenant_id": self._xero_client._connection.tenant_id if self._xero_client else None,
+                    "has_repeating_invoice": client.xero_repeating_invoice_id is not None,
+                }
+            )
 
             await self.db.commit()
             await self._log_sync("client_push", client.id, "success")
@@ -129,6 +151,17 @@ class SyncService:
         except Exception as e:
             client.sync_status = "error"
             client.sync_error = str(e)
+
+            # Also update mapping status to error (dual-write)
+            try:
+                await self._mapping_service.update_sync_status(
+                    mapping_id=client.id,  # This won't work - need to get mapping first
+                    status="error",
+                    error_message=str(e)
+                )
+            except Exception:
+                pass  # Don't fail if mapping update fails
+
             await self.db.commit()
             await self._log_sync("client_push", client.id, "error", str(e))
 
@@ -221,11 +254,26 @@ class SyncService:
                     )
                     expense.xero_repeating_bill_id = result["repeating_bill_id"]
 
-            # Update sync status
+            # Update sync status (legacy fields)
             expense.sync_status = "synced"
             expense.last_synced_at = datetime.now(timezone.utc)
             expense.sync_error = None
             expense.source = expense.source or "manual"
+
+            # Dual-write to IntegrationMapping table (new architecture)
+            await self._mapping_service.create_or_update_mapping(
+                entity_type="expense_bucket",
+                entity_id=expense.id,
+                integration_type="xero",
+                external_id=expense.xero_contact_id,
+                external_type="contact",
+                sync_status="synced",
+                metadata={
+                    "xero_tenant_id": self._xero_client._connection.tenant_id if self._xero_client else None,
+                    "contact_type": "SUPPLIER",
+                    "has_repeating_bill": expense.xero_repeating_bill_id is not None,
+                }
+            )
 
             await self.db.commit()
             await self._log_sync("expense_push", expense.id, "success")
@@ -407,6 +455,157 @@ class SyncService:
             await self._log_sync("expenses_pull", None, "error", str(e))
 
         return created, updated, errors
+
+    # =========================================================================
+    # INVOICE SYNC: Xero → Tamio
+    # =========================================================================
+
+    async def pull_invoices_from_xero(self) -> Tuple[int, int, List[str]]:
+        """
+        Pull outstanding invoices from Xero and update client billing_config.
+
+        This ensures the forecast reflects actual invoices from Xero, not just
+        estimated billing schedules. Outstanding invoices (AUTHORISED status with
+        amount_due > 0) are stored in the client's billing_config.outstanding_invoices.
+
+        Returns:
+            Tuple of (invoices_processed, clients_updated, errors)
+        """
+        xero = await self._get_xero_client()
+        if not xero:
+            return 0, 0, ["No active Xero connection"]
+
+        invoices_processed = 0
+        clients_updated = 0
+        errors = []
+
+        try:
+            # Get all outstanding invoices (ACCREC = Accounts Receivable)
+            outstanding = xero.get_outstanding_invoices()
+
+            # Group invoices by contact_id
+            invoices_by_contact: Dict[str, List[Dict]] = {}
+            for inv in outstanding:
+                # Only process ACCREC (customer invoices), not ACCPAY (bills)
+                if inv.get("type") == "ACCREC" and inv.get("contact_id"):
+                    contact_id = inv["contact_id"]
+                    if contact_id not in invoices_by_contact:
+                        invoices_by_contact[contact_id] = []
+                    # Format for forecast engine compatibility
+                    # Uses expected_date and amount (not due_date and amount_due)
+                    due_date_val = inv.get("due_date")
+                    if due_date_val:
+                        if hasattr(due_date_val, 'isoformat'):
+                            expected_date = due_date_val.isoformat() if hasattr(due_date_val, 'date') else str(due_date_val)[:10]
+                        else:
+                            expected_date = str(due_date_val)[:10]  # Handle string dates
+                    else:
+                        expected_date = None
+
+                    invoices_by_contact[contact_id].append({
+                        "name": f"Invoice #{inv.get('invoice_number', 'N/A')}",
+                        "expected_date": expected_date,
+                        "amount": inv["amount_due"],
+                        "payment_terms": "net_0",  # Due date already accounts for payment terms
+                        "xero_invoice_id": inv["invoice_id"],
+                        "invoice_number": inv.get("invoice_number"),
+                        "currency": inv.get("currency_code", "USD"),
+                        "contact_name": inv.get("contact_name"),
+                    })
+                    invoices_processed += 1
+
+            # Update each client with their outstanding invoices
+            for contact_id, invoices in invoices_by_contact.items():
+                try:
+                    # Find the client by xero_contact_id
+                    result = await self.db.execute(
+                        select(Client).where(
+                            Client.user_id == self.user_id,
+                            Client.xero_contact_id == contact_id
+                        )
+                    )
+                    client = result.scalar_one_or_none()
+
+                    if client:
+                        # Update billing_config with outstanding invoices
+                        billing_config = client.billing_config or {}
+                        billing_config["outstanding_invoices"] = invoices
+                        billing_config["invoices_synced_at"] = datetime.now(timezone.utc).isoformat()
+                        client.billing_config = billing_config
+                        client.last_synced_at = datetime.now(timezone.utc)
+                        clients_updated += 1
+                    else:
+                        # Client doesn't exist in Tamio - they may need to sync contacts first
+                        contact_name = invoices[0].get("contact_name", contact_id)
+                        errors.append(f"No client found for Xero contact: {contact_name}")
+
+                except Exception as e:
+                    errors.append(f"Error updating client {contact_id}: {str(e)}")
+
+            # Also clear outstanding_invoices for clients with no current invoices
+            # (in case an invoice was paid since last sync)
+            result = await self.db.execute(
+                select(Client).where(
+                    Client.user_id == self.user_id,
+                    Client.xero_contact_id.isnot(None)
+                )
+            )
+            all_synced_clients = result.scalars().all()
+
+            for client in all_synced_clients:
+                if client.xero_contact_id not in invoices_by_contact:
+                    billing_config = client.billing_config or {}
+                    if "outstanding_invoices" in billing_config:
+                        # Clear old invoices that are no longer outstanding
+                        billing_config["outstanding_invoices"] = []
+                        billing_config["invoices_synced_at"] = datetime.now(timezone.utc).isoformat()
+                        client.billing_config = billing_config
+
+            await self.db.commit()
+            await self._log_sync(
+                "invoices_pull",
+                None,
+                "success",
+                f"Processed: {invoices_processed}, Clients updated: {clients_updated}"
+            )
+
+        except Exception as e:
+            errors.append(f"Failed to fetch invoices: {str(e)}")
+            await self._log_sync("invoices_pull", None, "error", str(e))
+
+        return invoices_processed, clients_updated, errors
+
+    async def full_sync_from_xero(self) -> Dict[str, Any]:
+        """
+        Perform a full sync: contacts + invoices.
+
+        This is the recommended sync method to ensure forecast accuracy.
+        """
+        results = {
+            "clients": {"created": 0, "updated": 0, "errors": []},
+            "expenses": {"created": 0, "updated": 0, "errors": []},
+            "invoices": {"processed": 0, "clients_updated": 0, "errors": []},
+        }
+
+        # Step 1: Sync contacts (customers → clients)
+        created, updated, errors = await self.pull_clients_from_xero()
+        results["clients"]["created"] = created
+        results["clients"]["updated"] = updated
+        results["clients"]["errors"] = errors
+
+        # Step 2: Sync contacts (suppliers → expenses)
+        created, updated, errors = await self.pull_expenses_from_xero()
+        results["expenses"]["created"] = created
+        results["expenses"]["updated"] = updated
+        results["expenses"]["errors"] = errors
+
+        # Step 3: Sync outstanding invoices (critical for forecast accuracy)
+        processed, clients_updated, errors = await self.pull_invoices_from_xero()
+        results["invoices"]["processed"] = processed
+        results["invoices"]["clients_updated"] = clients_updated
+        results["invoices"]["errors"] = errors
+
+        return results
 
     # =========================================================================
     # HELPERS

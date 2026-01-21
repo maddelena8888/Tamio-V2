@@ -22,8 +22,11 @@ python-multipart==0.0.6
 python-dateutil==2.8.2
 httpx==0.26.0
 
+# Background Jobs
+apscheduler==3.10.4
+
 # AI/LLM
-openai==1.12.0
+anthropic>=0.40.0
 
 # Xero Integration
 xero-python==4.0.0

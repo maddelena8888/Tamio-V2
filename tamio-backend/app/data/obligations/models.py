@@ -57,6 +57,13 @@ class ObligationAgreement(Base):
 
     currency = Column(String, nullable=False, default="USD")
 
+    # Base currency normalization (for multi-currency forecasting)
+    # When obligation currency differs from user's base currency, this stores
+    # the converted amount for easy aggregation in forecasts
+    base_currency_amount = Column(Numeric(precision=15, scale=2), nullable=True)
+    exchange_rate_used = Column(Numeric(precision=18, scale=8), nullable=True)
+    exchange_rate_date = Column(Date, nullable=True)
+
     # Timing
     frequency = Column(String, nullable=True)
     # Options: "one_time", "weekly", "bi_weekly", "monthly", "quarterly", "annually"
@@ -86,17 +93,34 @@ class ObligationAgreement(Base):
     xero_invoice_id = Column(String, nullable=True)
     xero_repeating_invoice_id = Column(String, nullable=True)
 
+    # ==========================================================================
+    # Source Entity Links (One-to-Many: Client/ExpenseBucket -> ObligationAgreement)
+    # ==========================================================================
+    # Link to source Client (for revenue obligations)
+    # A Client can have multiple ObligationAgreements (retainer, project milestones, etc.)
+    client_id = Column(String, ForeignKey("clients.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    # Link to source ExpenseBucket (for expense obligations)
+    # An ExpenseBucket can have multiple ObligationAgreements
+    expense_bucket_id = Column(String, ForeignKey("expense_buckets.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # Relationships
     user = relationship("User", back_populates="obligation_agreements")
     account = relationship("CashAccount")
     schedules = relationship("ObligationSchedule", back_populates="obligation", cascade="all, delete-orphan")
     payment_events = relationship("PaymentEvent", back_populates="obligation", cascade="all, delete-orphan")
 
+    # Source entity relationships
+    client = relationship("Client", back_populates="obligations")
+    expense_bucket = relationship("ExpenseBucket", back_populates="obligations")
+
     # Indexes
     __table_args__ = (
         Index("ix_obligation_agreements_user_id", "user_id"),
         Index("ix_obligation_agreements_category", "category"),
         Index("ix_obligation_agreements_type", "obligation_type"),
+        Index("ix_obligation_agreements_client_id", "client_id"),
+        Index("ix_obligation_agreements_expense_bucket_id", "expense_bucket_id"),
     )
 
 
@@ -122,6 +146,10 @@ class ObligationSchedule(Base):
 
     # How much do we expect to pay?
     estimated_amount = Column(Numeric(precision=15, scale=2), nullable=False)
+
+    # Base currency normalization (for multi-currency forecasting)
+    base_currency_amount = Column(Numeric(precision=15, scale=2), nullable=True)
+    exchange_rate_used = Column(Numeric(precision=18, scale=8), nullable=True)
 
     # How was estimate determined?
     estimate_source = Column(String, nullable=False)
@@ -152,6 +180,7 @@ class ObligationSchedule(Base):
     # Relationships
     obligation = relationship("ObligationAgreement", back_populates="schedules")
     payment_events = relationship("PaymentEvent", back_populates="schedule", cascade="all, delete-orphan")
+    cash_events = relationship("CashEvent", back_populates="obligation_schedule")
 
     # Indexes
     __table_args__ = (
@@ -205,6 +234,10 @@ class PaymentEvent(Base):
     # Reconciliation
     is_reconciled = Column(Boolean, nullable=False, default=False)
     reconciled_at = Column(DateTime(timezone=True), nullable=True)
+
+    # V4 Required: Variance tracking (actual vs expected)
+    # Positive = overpaid, Negative = underpaid
+    variance_vs_expected = Column(Numeric(precision=15, scale=2), nullable=True)
 
     # Metadata
     vendor_name = Column(String, nullable=True)

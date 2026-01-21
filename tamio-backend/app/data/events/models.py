@@ -29,6 +29,15 @@ class CashEvent(Base):
     client_id = Column(String, ForeignKey("clients.id", ondelete="CASCADE"), nullable=True, index=True)
     bucket_id = Column(String, ForeignKey("expense_buckets.id", ondelete="CASCADE"), nullable=True, index=True)
 
+    # Link to canonical obligation system (new architecture)
+    # This enables traceability from CashEvents back to the ObligationSchedule that generated them
+    obligation_schedule_id = Column(
+        String,
+        ForeignKey("obligation_schedules.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
+
     # Confidence
     confidence = Column(String, nullable=False, default="high")  # "high" | "medium" | "low"
     confidence_reason = Column(String, nullable=True)
@@ -46,6 +55,7 @@ class CashEvent(Base):
     user = relationship("User", back_populates="cash_events")
     client = relationship("Client", back_populates="cash_events")
     expense_bucket = relationship("ExpenseBucket", back_populates="cash_events")
+    obligation_schedule = relationship("ObligationSchedule", back_populates="cash_events")
 
     # Indexes
     __table_args__ = (

@@ -6,10 +6,13 @@ from datetime import date, timedelta, datetime
 from decimal import Decimal
 from copy import deepcopy
 import secrets
+import logging
 
 from app.scenarios import models
 from app.data.models import CashEvent, Client, ExpenseBucket, User, CashAccount
-from app.forecast.engine import calculate_13_week_forecast
+from app.forecast.engine_v2 import calculate_13_week_forecast, ScenarioContext
+
+logger = logging.getLogger(__name__)
 
 
 async def build_scenario_layer(
@@ -579,8 +582,8 @@ async def _build_contractor_change(
 
             current_date += timedelta(days=30)
     else:
-        # Remove contractor expenses (would need bucket_id in scope_config)
-        bucket_id = scenario.scope_config.get("bucket_id")
+        # Remove contractor expenses - check both scope_config and parameters for bucket_id
+        bucket_id = scenario.scope_config.get("bucket_id") or params.get("bucket_id")
         if bucket_id:
             result = await db.execute(
                 select(CashEvent).where(
@@ -600,6 +603,36 @@ async def _build_contractor_change(
                     layer_attribution=scenario.name,
                     change_reason=f"Contractor ended {start_or_end_date}"
                 ))
+        elif monthly_estimate > 0:
+            # No specific bucket, but amount provided - generate synthetic savings
+            # This represents the cash saved by not paying the contractor
+            forecast_end = date.today() + timedelta(weeks=13)
+            current_date = start_or_end_date
+
+            while current_date <= forecast_end:
+                event_data = {
+                    "user_id": scenario.user_id,
+                    "date": str(current_date),
+                    "amount": str(monthly_estimate),
+                    "direction": "in",  # Savings = money not going out = effective inflow
+                    "event_type": "scenario_adjustment",
+                    "category": "contractor_savings",
+                    "confidence": "medium",
+                    "confidence_reason": "scenario_contractor_loss",
+                    "is_recurring": True,
+                    "recurrence_pattern": "monthly",
+                }
+
+                scenario_events.append(models.ScenarioEvent(
+                    scenario_id=scenario.id,
+                    original_event_id=None,
+                    operation="add",
+                    event_data=event_data,
+                    layer_attribution=scenario.name,
+                    change_reason=f"Contractor savings from {start_or_end_date}"
+                ))
+
+                current_date += timedelta(days=30)
 
     return scenario_events
 
@@ -889,14 +922,21 @@ async def compute_scenario_forecast(
     scenario_id: str
 ) -> Dict[str, Any]:
     """
-    Compute forecast with scenario overlay.
+    Compute forecast with scenario overlay using ScenarioContext.
+
+    This is the V2 approach that works with the on-the-fly forecast engine.
+    Instead of modifying CashEvents, it builds a ScenarioContext that tells
+    the forecast engine how to modify its computations.
 
     Returns both base and scenario forecasts with delta analysis.
     """
-    # Get base forecast
+    # Expire all cached objects to ensure fresh data from database
+    db.expire_all()
+
+    # Get base forecast (no scenario context)
     base_forecast = await calculate_13_week_forecast(db, user_id)
 
-    # Get scenario and its events
+    # Get scenario
     result = await db.execute(
         select(models.Scenario).where(models.Scenario.id == scenario_id)
     )
@@ -904,20 +944,19 @@ async def compute_scenario_forecast(
     if not scenario:
         raise ValueError(f"Scenario {scenario_id} not found")
 
-    # Get scenario events
-    result = await db.execute(
-        select(models.ScenarioEvent).where(
-            models.ScenarioEvent.scenario_id == scenario_id
-        )
-    )
-    scenario_events = result.scalars().all()
+    # Build ScenarioContext from scenario parameters
+    scenario_context = await _build_scenario_context(db, scenario)
 
-    # Build modified event list
-    modified_events = await _apply_scenario_layer(db, user_id, scenario_events)
+    logger.info(f"Built scenario context for {scenario.scenario_type}:")
+    logger.info(f"  - excluded_client_ids: {scenario_context.excluded_client_ids}")
+    logger.info(f"  - excluded_bucket_ids: {scenario_context.excluded_bucket_ids}")
+    logger.info(f"  - client_payment_delays: {scenario_context.client_payment_delays}")
+    logger.info(f"  - added_revenue: {len(scenario_context.added_revenue)} items")
+    logger.info(f"  - added_expenses: {len(scenario_context.added_expenses)} items")
 
-    # Compute scenario forecast with modified events
-    scenario_forecast = await _compute_forecast_with_events(
-        db, user_id, modified_events
+    # Compute scenario forecast with context
+    scenario_forecast = await calculate_13_week_forecast(
+        db, user_id, scenario_context=scenario_context
     )
 
     # Calculate deltas
@@ -935,12 +974,225 @@ async def compute_scenario_forecast(
     }
 
 
+async def _build_scenario_context(
+    db: AsyncSession,
+    scenario: models.Scenario
+) -> ScenarioContext:
+    """
+    Build a ScenarioContext from a Scenario's type and parameters.
+
+    This translates scenario definitions into instructions for the forecast engine.
+    """
+    context = ScenarioContext()
+
+    # Normalize scenario type
+    scenario_type = scenario.scenario_type
+    if hasattr(scenario_type, 'value'):
+        scenario_type = scenario_type.value
+
+    params = scenario.parameters or {}
+    scope = scenario.scope_config or {}
+
+    # Parse effective date
+    effective_date_str = params.get("effective_date")
+    if effective_date_str:
+        context.effective_date = date.fromisoformat(effective_date_str)
+    else:
+        context.effective_date = date.today()
+
+    # Handle different scenario types
+    if scenario_type == "client_loss":
+        client_id = scope.get("client_id")
+        if client_id:
+            context.excluded_client_ids.append(client_id)
+            logger.info(f"Client loss scenario: excluding client {client_id}")
+
+    elif scenario_type == "client_gain":
+        # Add new revenue stream
+        start_date = params.get("start_date") or params.get("effective_date") or date.today().isoformat()
+        amount = params.get("monthly_amount") or params.get("monthly_revenue") or params.get("amount") or 0
+        frequency = params.get("frequency", "monthly")
+        name = scenario.name or "New Client"
+
+        if amount and Decimal(str(amount)) > 0:
+            context.added_revenue.append({
+                "start_date": start_date,
+                "amount": amount,
+                "frequency": frequency,
+                "name": name,
+            })
+            logger.info(f"Client gain scenario: adding ${amount}/mo revenue starting {start_date}")
+
+    elif scenario_type == "client_change":
+        client_id = scope.get("client_id")
+        delta_amount = Decimal(str(params.get("delta_amount", 0)))
+        if client_id and delta_amount != 0:
+            context.client_amount_deltas[client_id] = delta_amount
+            logger.info(f"Client change scenario: modifying client {client_id} by ${delta_amount}")
+
+    elif scenario_type in ("payment_delay", "payment_delay_in"):
+        client_id = scope.get("client_id")
+        delay_weeks = params.get("delay_weeks")
+        delay_days = params.get("delay_days")
+
+        if delay_weeks:
+            delay_days = int(delay_weeks) * 7
+        elif delay_days:
+            delay_days = int(delay_days)
+        else:
+            delay_days = 14  # Default 2 weeks
+
+        if client_id:
+            context.client_payment_delays[client_id] = delay_days
+            logger.info(f"Payment delay scenario: delaying client {client_id} by {delay_days} days")
+
+    elif scenario_type == "hiring":
+        start_date = params.get("start_date") or params.get("effective_date") or date.today().isoformat()
+        monthly_cost = params.get("monthly_cost") or params.get("monthly_salary") or params.get("amount") or 0
+        onboarding_costs = params.get("onboarding_costs")
+        name = scenario.name or "New Hire"
+
+        if monthly_cost and Decimal(str(monthly_cost)) > 0:
+            context.added_expenses.append({
+                "start_date": start_date,
+                "amount": monthly_cost,
+                "frequency": "monthly",
+                "category": "payroll",
+                "name": name,
+                "is_one_time": False,
+            })
+            logger.info(f"Hiring scenario: adding ${monthly_cost}/mo payroll starting {start_date}")
+
+        if onboarding_costs and Decimal(str(onboarding_costs)) > 0:
+            context.added_expenses.append({
+                "start_date": start_date,
+                "amount": onboarding_costs,
+                "frequency": "monthly",
+                "category": "payroll_onboarding",
+                "name": f"{name} - Onboarding",
+                "is_one_time": True,
+            })
+
+    elif scenario_type == "firing":
+        bucket_id = scope.get("bucket_id")
+        if bucket_id:
+            context.excluded_bucket_ids.append(bucket_id)
+            logger.info(f"Firing scenario: excluding expense bucket {bucket_id}")
+
+        severance = params.get("severance_amount")
+        if severance and Decimal(str(severance)) > 0:
+            end_date = params.get("end_date") or params.get("effective_date") or date.today().isoformat()
+            context.added_expenses.append({
+                "start_date": end_date,
+                "amount": severance,
+                "frequency": "monthly",
+                "category": "severance",
+                "name": "Severance Payment",
+                "is_one_time": True,
+            })
+
+    elif scenario_type == "contractor_gain":
+        start_date = params.get("start_date") or params.get("effective_date") or date.today().isoformat()
+        monthly_estimate = params.get("monthly_estimate") or params.get("amount") or 0
+        name = scenario.name or "New Contractor"
+
+        if monthly_estimate and Decimal(str(monthly_estimate)) > 0:
+            context.added_expenses.append({
+                "start_date": start_date,
+                "amount": monthly_estimate,
+                "frequency": "monthly",
+                "category": "contractors",
+                "name": name,
+                "is_one_time": False,
+            })
+            logger.info(f"Contractor gain scenario: adding ${monthly_estimate}/mo contractor cost")
+
+    elif scenario_type == "contractor_loss":
+        bucket_id = scope.get("bucket_id")
+        if bucket_id:
+            context.excluded_bucket_ids.append(bucket_id)
+            logger.info(f"Contractor loss scenario: excluding expense bucket {bucket_id}")
+
+    elif scenario_type == "increased_expense":
+        amount = Decimal(str(params.get("amount") or params.get("monthly_estimate") or 0))
+        start_date = params.get("effective_date") or params.get("start_date") or date.today().isoformat()
+        is_recurring = params.get("is_recurring", True)
+        category = params.get("category", "other")
+        name = scenario.name or "Increased Expense"
+
+        if amount > 0:
+            context.added_expenses.append({
+                "start_date": start_date,
+                "amount": str(amount),
+                "frequency": "monthly" if is_recurring else None,
+                "category": category,
+                "name": name,
+                "is_one_time": not is_recurring,
+            })
+            logger.info(f"Increased expense scenario: adding ${amount} expense")
+
+    elif scenario_type == "decreased_expense":
+        bucket_id = scope.get("bucket_id")
+        amount = Decimal(str(params.get("amount") or 0))
+
+        if bucket_id:
+            # Either exclude entirely or reduce amount
+            if amount > 0:
+                # Reduce by specific amount (negative delta)
+                context.expense_amount_deltas[bucket_id] = -amount
+                logger.info(f"Decreased expense scenario: reducing bucket {bucket_id} by ${amount}")
+            else:
+                # Exclude entirely
+                context.excluded_bucket_ids.append(bucket_id)
+                logger.info(f"Decreased expense scenario: excluding bucket {bucket_id}")
+
+    elif scenario_type == "payment_delay_out":
+        # For outgoing payment delays, we don't need to modify the forecast
+        # as it doesn't affect the cash position (payment still goes out, just later)
+        # This is more of a cash flow timing optimization
+        logger.info(f"Payment delay out scenario: no forecast modifications needed")
+
+    # Process linked scenarios if any
+    linked_scenarios = scenario.linked_scenarios or []
+    for linked in linked_scenarios:
+        layer_type = linked.get("layer_type")
+        layer_params = linked.get("parameters", {})
+
+        # Create a mini-scenario for the linked layer
+        class LinkedScenario:
+            def __init__(self, layer_type, layer_params, parent):
+                self.scenario_type = layer_type
+                self.parameters = layer_params
+                self.scope_config = layer_params.get("scope_config", {})
+                self.name = linked.get("layer_name", layer_type)
+                self.linked_scenarios = []
+
+        linked_scenario = LinkedScenario(layer_type, layer_params, scenario)
+        linked_context = await _build_scenario_context(db, linked_scenario)
+
+        # Merge linked context into main context
+        context.excluded_client_ids.extend(linked_context.excluded_client_ids)
+        context.excluded_bucket_ids.extend(linked_context.excluded_bucket_ids)
+        context.client_amount_deltas.update(linked_context.client_amount_deltas)
+        context.expense_amount_deltas.update(linked_context.expense_amount_deltas)
+        context.client_payment_delays.update(linked_context.client_payment_delays)
+        context.added_revenue.extend(linked_context.added_revenue)
+        context.added_expenses.extend(linked_context.added_expenses)
+
+    return context
+
+
 async def _apply_scenario_layer(
     db: AsyncSession,
     user_id: str,
     scenario_events: List[models.ScenarioEvent]
 ) -> List[Any]:
     """Apply scenario modifications to create modified event list."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"Applying scenario layer with {len(scenario_events)} scenario events")
+
     # Get all base events
     result = await db.execute(
         select(CashEvent).where(
@@ -949,6 +1201,8 @@ async def _apply_scenario_layer(
         ).order_by(CashEvent.date)
     )
     base_events = result.scalars().all()
+
+    logger.info(f"Found {len(base_events)} base events")
 
     # Convert to dict for easy manipulation
     events_dict = {event.id: event for event in base_events}
@@ -977,7 +1231,10 @@ async def _apply_scenario_layer(
         elif sc_event.operation == "delete":
             # Remove event
             if sc_event.original_event_id in events_dict:
+                logger.info(f"Deleting event {sc_event.original_event_id}")
                 del events_dict[sc_event.original_event_id]
+            else:
+                logger.warning(f"Event {sc_event.original_event_id} not found in events_dict (has {len(events_dict)} events)")
 
         elif sc_event.operation == "add":
             # Add new event as mock object
@@ -996,6 +1253,8 @@ async def _apply_scenario_layer(
 
     # Combine all events
     all_events = list(events_dict.values()) + added_events
+
+    logger.info(f"After applying scenario layer: {len(all_events)} total events (was {len(base_events)}, added {len(added_events)})")
 
     return all_events
 
@@ -1019,6 +1278,19 @@ async def _compute_forecast_with_events(
     # Build 13-week forecast
     weeks = []
     current_balance = starting_cash
+
+    # Add Week 0 - Current cash position (matches engine_v2.py format)
+    weeks.append({
+        "week_number": 0,
+        "week_start": forecast_start.isoformat(),
+        "week_end": forecast_start.isoformat(),
+        "starting_balance": str(starting_cash),
+        "cash_in": "0",
+        "cash_out": "0",
+        "net_change": "0",
+        "ending_balance": str(starting_cash),
+        "events": []
+    })
 
     for week_num in range(1, 14):
         week_start = forecast_start + timedelta(days=(week_num - 1) * 7)
@@ -1066,15 +1338,17 @@ async def _compute_forecast_with_events(
 
         current_balance = ending_balance
 
-    # Calculate summary statistics
-    balances = [Decimal(w["ending_balance"]) for w in weeks]
-    lowest_balance = min(balances)
-    lowest_week = balances.index(lowest_balance) + 1
+    # Calculate summary statistics (exclude Week 0 from calculations since it's just starting position)
+    forecast_weeks = [w for w in weeks if w["week_number"] > 0]
+    balances = [Decimal(w["ending_balance"]) for w in forecast_weeks]
+    lowest_balance = min(balances) if balances else Decimal("0")
+    lowest_week_idx = balances.index(lowest_balance) if balances else 0
+    lowest_week = forecast_weeks[lowest_week_idx]["week_number"] if forecast_weeks else 1
 
-    total_cash_in = sum(Decimal(w["cash_in"]) for w in weeks)
-    total_cash_out = sum(Decimal(w["cash_out"]) for w in weeks)
+    total_cash_in = sum(Decimal(w["cash_in"]) for w in forecast_weeks)
+    total_cash_out = sum(Decimal(w["cash_out"]) for w in forecast_weeks)
 
-    # Calculate runway (weeks until cash hits 0)
+    # Calculate runway (weeks until cash hits 0, based on forecast weeks not Week 0)
     runway_weeks = 13
     for i, balance in enumerate(balances):
         if balance <= 0:

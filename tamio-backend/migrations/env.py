@@ -17,7 +17,6 @@ from app.data.models import (
 )
 from app.xero.models import XeroConnection, XeroSyncLog
 from app.scenarios.models import Scenario, ScenarioEvent
-from app.tami.models import ConversationSession, ConversationMessage, UserActivity
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

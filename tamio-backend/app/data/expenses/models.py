@@ -1,5 +1,5 @@
 """Expense Bucket model for cash outflows."""
-from sqlalchemy import Column, String, DateTime, Numeric, Boolean, Integer, Text, ForeignKey
+from sqlalchemy import Column, String, DateTime, Date, Numeric, Boolean, Integer, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -24,12 +24,35 @@ class ExpenseBucket(Base):
     # From Form
     monthly_amount = Column(Numeric(precision=15, scale=2), nullable=False)
     currency = Column(String, nullable=False, default="USD")
+
+    # Base currency normalization (for multi-currency forecasting)
+    # When expense currency differs from user's base currency, this stores
+    # the converted amount for easy aggregation in forecasts
+    base_currency_amount = Column(Numeric(precision=15, scale=2), nullable=True)
+    exchange_rate_used = Column(Numeric(precision=18, scale=8), nullable=True)
+    exchange_rate_date = Column(Date, nullable=True)
+
     priority = Column(String, nullable=False)  # "high" | "medium" | "low" or "essential" | "important" | "discretionary"
     is_stable = Column(Boolean, nullable=False, default=True)
 
     # Payment timing
     due_day = Column(Integer, nullable=True, default=15)  # Day of month (1-28)
     frequency = Column(String, nullable=True, default="monthly")  # "monthly" | "weekly" | "quarterly"
+
+    # V4 Required Vendor Fields
+    # Payment terms: Net-30, Net-60, Due on receipt, etc.
+    payment_terms = Column(String, nullable=True)  # "net_30" | "net_60" | "net_15" | "due_on_receipt" | "custom"
+    payment_terms_days = Column(Integer, nullable=True)  # Actual days if custom or computed from term
+
+    # Flexibility level: can we delay payment if cash is tight?
+    flexibility_level = Column(String, nullable=True)  # "can_delay" | "negotiable" | "cannot_delay"
+
+    # Criticality: how essential is this vendor/expense?
+    criticality = Column(String, nullable=True)  # "critical" | "important" | "flexible"
+
+    # Past delay history: have we delayed payments to this vendor before?
+    delay_history = Column(JSONB, nullable=True, default=list)
+    # Format: [{"date": "2024-01-15", "days_delayed": 7, "reason": "cash flow"}, ...]
 
     # Optional metadata
     employee_count = Column(Integer, nullable=True)  # For payroll buckets
@@ -63,3 +86,12 @@ class ExpenseBucket(Base):
     # Relationships
     user = relationship("User", back_populates="expense_buckets")
     cash_events = relationship("CashEvent", back_populates="expense_bucket", cascade="all, delete-orphan")
+
+    # One-to-Many: ExpenseBucket -> ObligationAgreement
+    # Each expense bucket can have multiple obligations
+    obligations = relationship(
+        "ObligationAgreement",
+        back_populates="expense_bucket",
+        cascade="all, delete-orphan",
+        foreign_keys="[ObligationAgreement.expense_bucket_id]"
+    )

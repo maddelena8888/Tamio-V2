@@ -21,10 +21,20 @@ class ObligationAgreementCreate(BaseModel):
 
     user_id: str = Field(..., description="User ID who owns this obligation")
 
+    # Source entity links (One-to-Many: Client/ExpenseBucket -> ObligationAgreement)
+    client_id: Optional[str] = Field(
+        None,
+        description="Link to source Client (for revenue obligations). One Client can have multiple obligations."
+    )
+    expense_bucket_id: Optional[str] = Field(
+        None,
+        description="Link to source ExpenseBucket (for expense obligations). One ExpenseBucket can have multiple obligations."
+    )
+
     # What kind of obligation?
     obligation_type: Literal[
         "vendor_bill", "subscription", "payroll", "contractor",
-        "loan_payment", "tax_obligation", "lease", "other"
+        "loan_payment", "tax_obligation", "lease", "other", "revenue"
     ] = Field(..., description="Type of obligation")
 
     # Amount structure
@@ -109,6 +119,11 @@ class ObligationAgreementResponse(BaseModel):
 
     id: str
     user_id: str
+
+    # Source entity links
+    client_id: Optional[str] = None
+    expense_bucket_id: Optional[str] = None
+
     obligation_type: str
     amount_type: str
     amount_source: str

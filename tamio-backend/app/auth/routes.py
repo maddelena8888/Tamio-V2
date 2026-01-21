@@ -95,6 +95,44 @@ async def login(data: schemas.LoginRequest, db: AsyncSession = Depends(get_db)):
     )
 
 
+@router.post("/demo-login", response_model=schemas.AuthResponse)
+async def demo_login(data: schemas.DemoLoginRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Login to demo account with special demo token.
+    Allows anyone to try Tamio with sample data.
+    """
+    # Verify demo token
+    if data.token != settings.DEMO_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid demo token"
+        )
+
+    # Find the demo account
+    result = await db.execute(
+        select(User).where(User.email == settings.DEMO_ACCOUNT_EMAIL)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Demo account not found"
+        )
+
+    # Ensure the account is marked as demo
+    if not user.is_demo:
+        user.is_demo = True
+        await db.commit()
+        await db.refresh(user)
+
+    token = create_access_token(user.id, user.email)
+    return schemas.AuthResponse(
+        access_token=token,
+        user=schemas.UserAuthInfo.model_validate(user)
+    )
+
+
 @router.get("/me", response_model=schemas.UserAuthInfo)
 async def get_me(current_user: User = Depends(get_current_user)):
     """Get current authenticated user info."""
@@ -203,3 +241,77 @@ async def reset_password(
     return schemas.ForgotPasswordResponse(
         message="Your password has been reset successfully. You can now log in."
     )
+
+
+@router.post("/change-password", response_model=schemas.ForgotPasswordResponse)
+async def change_password(
+    data: schemas.ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Change password for authenticated user.
+    Requires current password verification.
+    """
+    # Verify current password
+    if not current_user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No password set. Please use forgot password to set one."
+        )
+
+    if not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+
+    # Update password
+    current_user.hashed_password = get_password_hash(data.new_password)
+    await db.commit()
+
+    return schemas.ForgotPasswordResponse(
+        message="Password changed successfully"
+    )
+
+
+@router.get("/business-profile", response_model=schemas.BusinessProfileResponse)
+async def get_business_profile(current_user: User = Depends(get_current_user)):
+    """Get current user's business profile."""
+    return schemas.BusinessProfileResponse(
+        industry=current_user.industry,
+        subcategory=current_user.subcategory,
+        revenue_range=current_user.revenue_range,
+        base_currency=current_user.base_currency,
+        is_complete=current_user.business_profile_completed_at is not None
+    )
+
+
+@router.post("/business-profile", response_model=schemas.UserAuthInfo)
+async def save_business_profile(
+    data: schemas.BusinessProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Save user's business profile during onboarding.
+    Sets the business_profile_completed_at timestamp.
+    """
+    # Validate subcategory is only provided for professional_services
+    if data.industry != 'professional_services' and data.subcategory is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Subcategory is only valid for professional_services industry"
+        )
+
+    # Update user's business profile
+    current_user.industry = data.industry
+    current_user.subcategory = data.subcategory
+    current_user.revenue_range = data.revenue_range
+    current_user.base_currency = data.base_currency
+    current_user.business_profile_completed_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return schemas.UserAuthInfo.model_validate(current_user)

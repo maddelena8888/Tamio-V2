@@ -1,18 +1,18 @@
 """
-Client Change Handler (Upsell/Downsell).
+Client Change Handler (Upsell/Downsell) - V4 Canonical Model.
 
-Implements the Mermaid decision tree:
+Implements the Mermaid decision tree using ObligationSchedule overlays:
 1. Select client + affected agreements
 2. Input change type (upsell/downsell/scope change)
 3. Input delta amount + effective date
-4. Modify future cash-in amounts
+4. Modify future revenue schedule amounts
 5. Prompt for cost base changes
 6. Apply cost delta with lag
 """
 
-from typing import List
+from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -20,12 +20,18 @@ from app.scenarios.pipeline.handlers.base import BaseScenarioHandler, generate_i
 from app.scenarios.pipeline.types import (
     ScenarioDefinition,
     ScenarioDelta,
+    ScheduleDelta,
 )
-from app.data.models import CashEvent, ExpenseBucket
+from app.data.obligations.models import ObligationAgreement, ObligationSchedule
+from app.data.expenses.models import ExpenseBucket
 
 
 class ClientChangeHandler(BaseScenarioHandler):
-    """Handler for Client Change (upsell/downsell) scenarios."""
+    """
+    Handler for Client Change (upsell/downsell) scenarios.
+
+    V4: Uses ObligationSchedule overlays to modify revenue and cost schedule amounts.
+    """
 
     def required_params(self) -> List[str]:
         return [
@@ -50,11 +56,11 @@ class ClientChangeHandler(BaseScenarioHandler):
         """
         Apply client change to modify future revenue and optionally costs.
 
-        Steps per Mermaid:
-        1. Get future events for client from effective date
-        2. Modify amounts by delta (positive for upsell, negative for downsell)
+        Steps per Mermaid flowchart:
+        1. Get future ObligationSchedules for client from effective date
+        2. Modify schedule amounts by delta (positive for upsell, negative for downsell)
         3. If cost changes configured:
-           a. Apply cost delta with optional lag
+           a. Apply cost schedule delta with optional lag
         """
         delta = ScenarioDelta(scenario_id=definition.scenario_id)
         params = definition.parameters
@@ -70,127 +76,161 @@ class ClientChangeHandler(BaseScenarioHandler):
         else:
             effective_date = effective_date_str or date.today()
 
-        # Get future events for this client
-        result = await db.execute(
-            select(CashEvent).where(
-                CashEvent.client_id.in_(client_ids),
-                CashEvent.date >= effective_date,
-                CashEvent.direction == "in"
-            )
-        )
-        events = list(result.scalars().all())
+        total_revenue_change = Decimal("0")
 
-        # Modify each event
-        for event in events:
-            new_amount = event.amount + delta_amount
+        # Step 1-2: Modify revenue schedules for each client
+        for client_id in client_ids:
+            schedules = await self.get_schedules_for_client(db, client_id, effective_date)
 
-            # Don't allow negative amounts
-            if new_amount < 0:
-                new_amount = Decimal("0")
+            for schedule in schedules:
+                original_amount = schedule.estimated_amount or Decimal("0")
+                new_amount = original_amount + delta_amount
 
-            modified_event_data = {
-                "id": event.id,
-                "user_id": event.user_id,
-                "date": str(event.date),
-                "amount": str(new_amount),
-                "direction": event.direction,
-                "event_type": event.event_type,
-                "category": event.category,
-                "confidence": event.confidence,
-                "confidence_reason": f"client_{change_type}_{delta_amount}",
-                "is_recurring": event.is_recurring,
-                "recurrence_pattern": event.recurrence_pattern,
-                "client_id": event.client_id,
-                "scenario_id": definition.scenario_id,
-            }
+                # Don't allow negative amounts
+                if new_amount < 0:
+                    new_amount = Decimal("0")
 
-            change_description = "increased" if delta_amount > 0 else "decreased"
-            delta.updated_events.append(self.create_event_delta(
-                scenario_id=definition.scenario_id,
-                operation="modify",
-                event_data=modified_event_data,
-                original_event_id=event.id,
-                change_reason=f"Client {change_type}: amount {change_description} by ${abs(delta_amount):.0f}",
-            ))
+                weeks_out = (schedule.due_date - date.today()).days // 7
+                confidence, factors = self._calculate_confidence(
+                    weeks_out=weeks_out,
+                    scenario_type="client_change",
+                    has_integration_backing=False,
+                )
 
-        # Apply linked cost changes if configured
+                change_description = "increased" if delta_amount > 0 else "decreased"
+
+                modified_schedule_data = {
+                    "id": schedule.id,
+                    "estimated_amount": str(new_amount),
+                    "original_amount": str(original_amount),
+                    "delta_amount": str(delta_amount),
+                    "confidence": confidence,
+                    "change_type": change_type,
+                }
+
+                delta.updated_schedules.append(self.create_schedule_delta(
+                    scenario_id=definition.scenario_id,
+                    operation="modify",
+                    schedule_data=modified_schedule_data,
+                    original_schedule_id=schedule.id,
+                    obligation_id=schedule.obligation_id,
+                    change_reason=f"Client {change_type}: amount {change_description} by ${abs(delta_amount):.0f}",
+                    confidence=confidence,
+                    confidence_factors=factors + [f"client_{change_type}"],
+                ))
+
+                total_revenue_change += (new_amount - original_amount)
+
+        # Step 3: Apply linked cost changes if configured
         cost_changes = params.get("linked_cost_changes", False)
 
         if cost_changes:
-            cost_drivers = params.get("linked_cost_drivers", [])
-            cost_delta = Decimal(str(params.get("linked_cost_delta", 0)))
-            lag_weeks = int(params.get("linked_lag_weeks", 0))
-
-            cost_effective_date = effective_date + timedelta(weeks=lag_weeks)
-
-            # Map cost drivers to categories
-            category_map = {
-                "contractors": "contractors",
-                "delivery": "other",
-                "tools": "software",
-            }
-
-            for driver in cost_drivers:
-                category = category_map.get(driver)
-                if not category:
-                    continue
-
-                # Find expense buckets
-                result = await db.execute(
-                    select(ExpenseBucket).where(
-                        ExpenseBucket.user_id == definition.user_id,
-                        ExpenseBucket.category == category
-                    )
-                )
-                buckets = list(result.scalars().all())
-
-                for bucket in buckets:
-                    # Find and modify future events
-                    result = await db.execute(
-                        select(CashEvent).where(
-                            CashEvent.bucket_id == bucket.id,
-                            CashEvent.date >= cost_effective_date,
-                            CashEvent.direction == "out"
-                        )
-                    )
-                    cost_events = list(result.scalars().all())
-
-                    for event in cost_events:
-                        new_amount = event.amount + cost_delta
-
-                        if new_amount <= 0:
-                            delta.deleted_event_ids.append(event.id)
-                            delta.updated_events.append(self.create_event_delta(
-                                scenario_id=definition.scenario_id,
-                                operation="delete",
-                                event_data={"id": event.id, "deleted": True},
-                                original_event_id=event.id,
-                                linked_change_id=f"linked_{driver}",
-                                change_reason=f"{driver} cost removed due to client change",
-                            ))
-                        else:
-                            modified_event_data = {
-                                "id": event.id,
-                                "user_id": event.user_id,
-                                "date": str(event.date),
-                                "amount": str(new_amount),
-                                "direction": event.direction,
-                                "event_type": event.event_type,
-                                "category": event.category,
-                                "bucket_id": event.bucket_id,
-                                "scenario_id": definition.scenario_id,
-                            }
-                            delta.updated_events.append(self.create_event_delta(
-                                scenario_id=definition.scenario_id,
-                                operation="modify",
-                                event_data=modified_event_data,
-                                original_event_id=event.id,
-                                linked_change_id=f"linked_{driver}",
-                                change_reason=f"{driver} cost adjusted by ${cost_delta:.0f} due to client change",
-                            ))
+            await self._apply_linked_cost_changes(
+                db, definition, delta, effective_date
+            )
 
         # Update summary
-        delta.total_events_affected = len(delta.updated_events)
-        delta.net_cash_impact = delta_amount * len([e for e in delta.updated_events if e.operation == "modify"])
+        delta.total_schedules_affected = len(delta.updated_schedules) + len(delta.created_schedules)
+        delta.net_cash_impact = total_revenue_change
+
+        # Confidence breakdown
+        delta.confidence_breakdown = self._calculate_confidence_breakdown(delta)
+        delta.overall_confidence = "high" if change_type == "upsell" else "medium"
 
         return delta
+
+    async def _apply_linked_cost_changes(
+        self,
+        db: AsyncSession,
+        definition: ScenarioDefinition,
+        delta: ScenarioDelta,
+        effective_date: date,
+    ) -> None:
+        """Apply linked cost changes to expense schedules."""
+        params = definition.parameters
+
+        cost_drivers = params.get("linked_cost_drivers", [])
+        cost_delta = Decimal(str(params.get("linked_cost_delta", 0)))
+        lag_weeks = int(params.get("linked_lag_weeks", 0))
+
+        cost_effective_date = effective_date + timedelta(weeks=lag_weeks)
+
+        # Map cost drivers to obligation categories
+        category_map = {
+            "contractors": "contractors",
+            "delivery": "other",
+            "tools": "software",
+        }
+
+        for driver in cost_drivers:
+            category = category_map.get(driver)
+            if not category:
+                continue
+
+            # Find expense schedules in this category
+            result = await db.execute(
+                select(ObligationSchedule).join(
+                    ObligationAgreement,
+                    ObligationSchedule.obligation_id == ObligationAgreement.id
+                ).where(
+                    and_(
+                        ObligationAgreement.user_id == definition.user_id,
+                        ObligationAgreement.category == category,
+                        ObligationSchedule.due_date >= cost_effective_date,
+                        ObligationSchedule.status == "scheduled",
+                    )
+                )
+            )
+            expense_schedules = list(result.scalars().all())
+
+            for schedule in expense_schedules:
+                original_amount = schedule.estimated_amount or Decimal("0")
+                new_amount = original_amount + cost_delta
+
+                if new_amount <= 0:
+                    # Remove entirely
+                    delta.deleted_schedule_ids.append(schedule.id)
+                    delta.updated_schedules.append(self.create_schedule_delta(
+                        scenario_id=definition.scenario_id,
+                        operation="delete",
+                        schedule_data={
+                            "id": schedule.id,
+                            "original_amount": str(original_amount),
+                            "cancelled": True,
+                        },
+                        original_schedule_id=schedule.id,
+                        obligation_id=schedule.obligation_id,
+                        linked_change_id=f"linked_{driver}",
+                        change_reason=f"{driver} cost removed due to client change",
+                        confidence="medium",
+                        confidence_factors=["linked_to_client_change"],
+                    ))
+                else:
+                    # Modify amount
+                    delta.updated_schedules.append(self.create_schedule_delta(
+                        scenario_id=definition.scenario_id,
+                        operation="modify",
+                        schedule_data={
+                            "id": schedule.id,
+                            "estimated_amount": str(new_amount),
+                            "original_amount": str(original_amount),
+                            "delta_amount": str(cost_delta),
+                        },
+                        original_schedule_id=schedule.id,
+                        obligation_id=schedule.obligation_id,
+                        linked_change_id=f"linked_{driver}",
+                        change_reason=f"{driver} cost adjusted by ${cost_delta:.0f} due to client change",
+                        confidence="medium",
+                        confidence_factors=["linked_to_client_change", f"lag_{lag_weeks}w"],
+                    ))
+
+    def _calculate_confidence_breakdown(self, delta: ScenarioDelta) -> Dict[str, int]:
+        """Calculate confidence breakdown across all schedule deltas."""
+        breakdown = {"high": 0, "medium": 0, "low": 0}
+
+        for sched in delta.created_schedules + delta.updated_schedules:
+            conf = sched.confidence or "medium"
+            if conf in breakdown:
+                breakdown[conf] += 1
+
+        return breakdown

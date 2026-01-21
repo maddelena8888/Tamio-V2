@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Link2, FileSpreadsheet, ArrowRight, Check } from 'lucide-react';
 import { getXeroConnectUrl } from '@/lib/api/xero';
-import { getQuickBooksConnectUrl } from '@/lib/api/quickbooks';
 
 // Helper to extract error message from various error types
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -27,7 +26,6 @@ export default function Onboarding() {
   const navigate = useNavigate();
   const { user, refreshUser } = useAuth();
   const [isConnectingXero, setIsConnectingXero] = useState(false);
-  const [isConnectingQuickBooks, setIsConnectingQuickBooks] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,20 +40,6 @@ export default function Onboarding() {
       console.error('Failed to get Xero auth URL:', err);
       setError(getErrorMessage(err, 'Failed to connect to Xero. Please check that the backend is running.'));
       setIsConnectingXero(false);
-    }
-  };
-
-  const handleConnectQuickBooks = async () => {
-    if (!user) return;
-    setError(null);
-    setIsConnectingQuickBooks(true);
-    try {
-      const { auth_url } = await getQuickBooksConnectUrl(user.id);
-      window.location.href = auth_url;
-    } catch (err) {
-      console.error('Failed to get QuickBooks auth URL:', err);
-      setError(getErrorMessage(err, 'Failed to connect to QuickBooks. Please check that the backend is running.'));
-      setIsConnectingQuickBooks(false);
     }
   };
 
@@ -80,7 +64,7 @@ export default function Onboarding() {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 py-16">
-      <div className="w-full max-w-5xl">
+      <div className="w-full max-w-3xl">
         {/* Header */}
         <div className="text-center mb-14">
           <img
@@ -104,7 +88,7 @@ export default function Onboarding() {
         )}
 
         {/* Integration Options */}
-        <div className="grid md:grid-cols-2 gap-8 mb-8">
+        <div className="space-y-6 mb-8">
           {/* Xero Option */}
           <NeuroCard className="relative cursor-pointer group hover:scale-[1.02] hover:shadow-xl transition-all duration-300">
             <NeuroCardHeader>
@@ -142,7 +126,7 @@ export default function Onboarding() {
               <Button
                 onClick={handleConnectXero}
                 className="w-full rounded-full bg-gradient-to-r from-tomato to-tomato/80 hover:from-tomato/90 hover:to-tomato/70 text-white font-semibold py-6 text-base shadow-lg shadow-tomato/20 transition-all duration-300"
-                disabled={isConnectingXero || isConnectingQuickBooks}
+                disabled={isConnectingXero}
               >
                 {isConnectingXero ? 'Connecting...' : 'Connect Xero'}
                 <ArrowRight className="ml-2 h-5 w-5" />
@@ -150,76 +134,31 @@ export default function Onboarding() {
             </NeuroCardContent>
           </NeuroCard>
 
-          {/* QuickBooks Option */}
-          <NeuroCard className="relative cursor-pointer group hover:scale-[1.02] hover:shadow-xl transition-all duration-300">
-            <NeuroCardHeader>
-              <div className="w-14 h-14 rounded-2xl bg-white/60 backdrop-blur-sm border border-white/30 flex items-center justify-center mb-5 shadow-sm">
-                <Link2 className="w-7 h-7 text-[#2CA01C]" />
+          {/* Manual Option */}
+          <NeuroCard className="relative cursor-pointer group hover:scale-[1.01] hover:shadow-xl transition-all duration-300">
+            <div className="flex flex-col md:flex-row md:items-center p-2 gap-6">
+              <div className="flex items-center gap-5 flex-1">
+                <div className="w-14 h-14 rounded-2xl bg-white/60 backdrop-blur-sm border border-white/30 flex items-center justify-center flex-shrink-0 shadow-sm">
+                  <FileSpreadsheet className="w-7 h-7 text-gunmetal" />
+                </div>
+                <div>
+                  <h3 className="font-league-spartan text-xl font-bold text-gunmetal">Enter Manually</h3>
+                  <p className="text-muted-foreground text-sm mt-1">
+                    Build your forecast from scratch with a simple guided setup. Quick 5-minute process.
+                  </p>
+                </div>
               </div>
-              <NeuroCardTitle className="font-league-spartan text-2xl font-bold text-gunmetal">
-                Connect QuickBooks
-              </NeuroCardTitle>
-              <NeuroCardDescription className="text-base mt-2">
-                Sync your QuickBooks Online data automatically.
-              </NeuroCardDescription>
-            </NeuroCardHeader>
-            <NeuroCardContent>
-              <ul className="space-y-3 text-sm text-muted-foreground mb-8">
-                <li className="flex items-center gap-3">
-                  <div className="w-5 h-5 rounded-full bg-lime/20 flex items-center justify-center flex-shrink-0">
-                    <Check className="w-3 h-3 text-lime" strokeWidth={3} />
-                  </div>
-                  Import customers, invoices, and bills
-                </li>
-                <li className="flex items-center gap-3">
-                  <div className="w-5 h-5 rounded-full bg-lime/20 flex items-center justify-center flex-shrink-0">
-                    <Check className="w-3 h-3 text-lime" strokeWidth={3} />
-                  </div>
-                  Sync bank account balances
-                </li>
-                <li className="flex items-center gap-3">
-                  <div className="w-5 h-5 rounded-full bg-lime/20 flex items-center justify-center flex-shrink-0">
-                    <Check className="w-3 h-3 text-lime" strokeWidth={3} />
-                  </div>
-                  Track vendor payments and expenses
-                </li>
-              </ul>
               <Button
-                onClick={handleConnectQuickBooks}
-                className="w-full rounded-full bg-gradient-to-r from-tomato to-tomato/80 hover:from-tomato/90 hover:to-tomato/70 text-white font-semibold py-6 text-base shadow-lg shadow-tomato/20 transition-all duration-300"
-                disabled={isConnectingXero || isConnectingQuickBooks}
+                onClick={handleManualSetup}
+                variant="outline"
+                className="md:w-auto w-full rounded-full px-8 py-6 border-2 border-gunmetal/20 hover:border-gunmetal/40 hover:bg-white/50 font-semibold transition-all duration-300"
               >
-                {isConnectingQuickBooks ? 'Connecting...' : 'Connect QuickBooks'}
+                Start Manual Setup
                 <ArrowRight className="ml-2 h-5 w-5" />
               </Button>
-            </NeuroCardContent>
+            </div>
           </NeuroCard>
         </div>
-
-        {/* Manual Option - Full Width */}
-        <NeuroCard className="relative cursor-pointer group hover:scale-[1.01] hover:shadow-xl transition-all duration-300">
-          <div className="flex flex-col md:flex-row md:items-center p-2 gap-6">
-            <div className="flex items-center gap-5 flex-1">
-              <div className="w-14 h-14 rounded-2xl bg-white/60 backdrop-blur-sm border border-white/30 flex items-center justify-center flex-shrink-0 shadow-sm">
-                <FileSpreadsheet className="w-7 h-7 text-gunmetal" />
-              </div>
-              <div>
-                <h3 className="font-league-spartan text-xl font-bold text-gunmetal">Enter Manually</h3>
-                <p className="text-muted-foreground text-sm mt-1">
-                  Build your forecast from scratch with a simple guided setup. Quick 5-minute process.
-                </p>
-              </div>
-            </div>
-            <Button
-              onClick={handleManualSetup}
-              variant="outline"
-              className="md:w-auto w-full rounded-full px-8 py-6 border-2 border-gunmetal/20 hover:border-gunmetal/40 hover:bg-white/50 font-semibold transition-all duration-300"
-            >
-              Start Manual Setup
-              <ArrowRight className="ml-2 h-5 w-5" />
-            </Button>
-          </div>
-        </NeuroCard>
 
         {/* Footer Note */}
         <p className="text-center text-sm text-muted-foreground mt-10">
@@ -231,7 +170,7 @@ export default function Onboarding() {
           <Button
             variant="ghost"
             onClick={handleSkip}
-            disabled={isSkipping || isConnectingXero || isConnectingQuickBooks}
+            disabled={isSkipping || isConnectingXero}
             className="text-muted-foreground hover:text-foreground"
           >
             {isSkipping ? 'Skipping...' : 'Skip for now'}

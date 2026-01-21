@@ -13,6 +13,7 @@ from app.data.clients.routes import router as clients_router
 from app.data.expenses.routes import router as expenses_router
 from app.data.events.routes import router as events_router
 from app.data.onboarding_routes import router as onboarding_router
+from app.data.exchange_rates.routes import router as exchange_rates_router
 
 # Create combined router
 router = APIRouter()
@@ -24,3 +25,4 @@ router.include_router(clients_router)
 router.include_router(expenses_router)
 router.include_router(events_router)
 router.include_router(onboarding_router)
+router.include_router(exchange_rates_router, prefix="/exchange-rates", tags=["exchange-rates"])

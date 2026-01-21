@@ -33,6 +33,8 @@ from app.scenarios.pipeline.types import (
     ScopeConfig,
     EventDelta,
     ObjectDelta,
+    ScheduleDelta,
+    AgreementDelta,
     PromptOption,
     LinkedChangeType,
     RuleResult,
@@ -41,8 +43,10 @@ from app.scenarios.pipeline.types import (
     DeltaSummary,
 )
 from app.scenarios import models
+from app.scenarios.overlay import ScenarioOverlayService, compute_weekly_forecast_from_events
+from app.scenarios.commit import ScenarioCommitService
 from app.data.models import CashEvent, Client, ExpenseBucket, User, CashAccount
-from app.forecast.engine import calculate_13_week_forecast
+from app.forecast.engine_v2 import calculate_13_week_forecast
 
 
 def generate_id(prefix: str) -> str:
@@ -1310,29 +1314,49 @@ class ScenarioPipeline:
         """
         Stage 5: Build layered forecast from base events + delta.
 
+        V4 Implementation:
+        - Applies delta directly to base forecast output (preserves alignment)
+        - Works regardless of underlying data source (Client/ExpenseBucket or ObligationSchedule)
+
         Returns (base_forecast, scenario_forecast, delta_summary)
         """
-        # Get base forecast
+        # Get base forecast - this is the source of truth
         base_forecast_data = await calculate_13_week_forecast(
             self.db, definition.user_id
         )
 
-        # Get all base events
-        result = await self.db.execute(
-            select(CashEvent).where(
-                CashEvent.user_id == definition.user_id,
-                CashEvent.date >= date.today()
-            ).order_by(CashEvent.date)
-        )
-        base_events = list(result.scalars().all())
+        forecast_start = date.today()
 
-        # Apply delta to create layered events
-        layered_events = self._apply_delta_to_events(base_events, delta)
-
-        # Compute scenario forecast
-        scenario_forecast_data = await self._compute_forecast_with_events(
-            definition.user_id, layered_events
+        # Check if we have schedule-based deltas (V4) or legacy event deltas
+        has_schedule_deltas = (
+            len(delta.created_schedules) > 0 or
+            len(delta.updated_schedules) > 0 or
+            len(delta.deleted_schedule_ids) > 0
         )
+
+        if has_schedule_deltas:
+            # V4: Apply schedule deltas directly to base forecast
+            # This ensures scenario forecast starts from same base and stays aligned
+            scenario_forecast_data = self._apply_schedule_deltas_to_forecast(
+                base_forecast_data, delta, forecast_start
+            )
+        else:
+            # Legacy: Use CashEvent-based approach
+            result = await self.db.execute(
+                select(CashEvent).where(
+                    CashEvent.user_id == definition.user_id,
+                    CashEvent.date >= date.today()
+                ).order_by(CashEvent.date)
+            )
+            base_events = list(result.scalars().all())
+
+            # Apply delta to create layered events
+            layered_events = self._apply_delta_to_events(base_events, delta)
+
+            # Compute scenario forecast
+            scenario_forecast_data = await self._compute_forecast_with_events(
+                definition.user_id, layered_events
+            )
 
         # Convert to summary objects
         base_summary = self._forecast_to_summary(base_forecast_data)
@@ -1348,6 +1372,210 @@ class ScenarioPipeline:
         definition.current_stage = PipelineStage.RULE_EVAL
 
         return base_summary, scenario_summary, delta_summary
+
+    def _apply_schedule_deltas_to_forecast(
+        self,
+        base_forecast: Dict[str, Any],
+        delta: ScenarioDelta,
+        forecast_start: date,
+    ) -> Dict[str, Any]:
+        """
+        Apply schedule-based deltas directly to the base forecast.
+
+        This modifies the weekly cash_in/cash_out values based on:
+        - created_schedules: Add new cash flows
+        - updated_schedules: Modify/delete existing flows
+        - deleted_schedule_ids: Remove cash flows
+
+        Returns a new forecast dict with scenario applied.
+        """
+        import copy
+
+        # Deep copy to avoid modifying base
+        scenario_forecast = copy.deepcopy(base_forecast)
+        weeks = scenario_forecast.get("weeks", [])
+
+        # Helper to find week for a date
+        def get_week_for_date(target_date: date) -> int:
+            if isinstance(target_date, str):
+                target_date = date.fromisoformat(target_date)
+            days_from_start = (target_date - forecast_start).days
+            week_num = (days_from_start // 7) + 1  # Week 1 starts at day 0
+            return max(1, min(week_num, 13))  # Clamp to 1-13
+
+        # Process created schedules (add new cash flows)
+        for created in delta.created_schedules:
+            data = created.schedule_data or {}
+            due_date = data.get("due_date")
+            if not due_date:
+                continue
+
+            if isinstance(due_date, str):
+                due_date = date.fromisoformat(due_date)
+
+            week_num = get_week_for_date(due_date)
+
+            # Find the week in the forecast
+            for week in weeks:
+                if week["week_number"] == week_num:
+                    amount = Decimal(str(data.get("estimated_amount", 0)))
+                    category = data.get("category", "other")
+
+                    # Determine direction
+                    revenue_categories = {"revenue", "retainer", "project", "milestone", "invoice"}
+                    direction = data.get("direction")
+                    if not direction:
+                        direction = "in" if category.lower() in revenue_categories else "out"
+
+                    if direction == "in":
+                        week["cash_in"] = str(Decimal(week["cash_in"]) + amount)
+                    else:
+                        week["cash_out"] = str(Decimal(week["cash_out"]) + amount)
+                    break
+
+        # Process updated schedules (modifications and deletions)
+        for updated in delta.updated_schedules:
+            data = updated.schedule_data or {}
+            operation = updated.operation
+
+            if operation == "delete":
+                # Remove cash flow from the week it was originally scheduled
+                original_amount = Decimal(str(data.get("original_amount", 0)))
+                original_date = data.get("original_due_date")
+
+                if original_date and original_amount > 0:
+                    if isinstance(original_date, str):
+                        original_date = date.fromisoformat(original_date)
+
+                    week_num = get_week_for_date(original_date)
+
+                    # Infer direction - deletions from client loss are typically revenue
+                    category = data.get("category", "revenue")
+                    revenue_categories = {"revenue", "retainer", "project", "milestone", "invoice"}
+                    direction = "in" if category.lower() in revenue_categories else "out"
+
+                    # If change_reason mentions "client" it's likely revenue
+                    change_reason = updated.change_reason or ""
+                    if "client" in change_reason.lower():
+                        direction = "in"
+
+                    for week in weeks:
+                        if week["week_number"] == week_num:
+                            if direction == "in":
+                                week["cash_in"] = str(max(Decimal("0"), Decimal(week["cash_in"]) - original_amount))
+                            else:
+                                week["cash_out"] = str(max(Decimal("0"), Decimal(week["cash_out"]) - original_amount))
+                            break
+
+            elif operation == "modify":
+                # Adjust amount - get the delta
+                original_amount = Decimal(str(data.get("original_amount", 0)))
+                new_amount = Decimal(str(data.get("estimated_amount", 0)))
+                amount_change = new_amount - original_amount
+
+                due_date = data.get("due_date")
+                if due_date:
+                    if isinstance(due_date, str):
+                        due_date = date.fromisoformat(due_date)
+                    week_num = get_week_for_date(due_date)
+
+                    for week in weeks:
+                        if week["week_number"] == week_num:
+                            # Infer direction from category or existing data
+                            category = data.get("category", "other")
+                            revenue_categories = {"revenue", "retainer", "project", "milestone", "invoice"}
+                            direction = "in" if category.lower() in revenue_categories else "out"
+
+                            if direction == "in":
+                                week["cash_in"] = str(Decimal(week["cash_in"]) + amount_change)
+                            else:
+                                week["cash_out"] = str(Decimal(week["cash_out"]) + amount_change)
+                            break
+
+            elif operation == "defer":
+                # Move payment from one week to another
+                original_date = data.get("original_due_date")
+                new_date = data.get("due_date")
+                amount = Decimal(str(data.get("estimated_amount", 0)))
+
+                if original_date and new_date:
+                    if isinstance(original_date, str):
+                        original_date = date.fromisoformat(original_date)
+                    if isinstance(new_date, str):
+                        new_date = date.fromisoformat(new_date)
+
+                    old_week = get_week_for_date(original_date)
+                    new_week = get_week_for_date(new_date)
+
+                    # Infer direction
+                    category = data.get("category", "other")
+                    revenue_categories = {"revenue", "retainer", "project", "milestone", "invoice"}
+                    direction = "in" if category.lower() in revenue_categories else "out"
+
+                    # Remove from old week
+                    for week in weeks:
+                        if week["week_number"] == old_week:
+                            if direction == "in":
+                                week["cash_in"] = str(max(Decimal("0"), Decimal(week["cash_in"]) - amount))
+                            else:
+                                week["cash_out"] = str(max(Decimal("0"), Decimal(week["cash_out"]) - amount))
+                            break
+
+                    # Add to new week (if within forecast window)
+                    if new_week <= 13:
+                        for week in weeks:
+                            if week["week_number"] == new_week:
+                                if direction == "in":
+                                    week["cash_in"] = str(Decimal(week["cash_in"]) + amount)
+                                else:
+                                    week["cash_out"] = str(Decimal(week["cash_out"]) + amount)
+                                break
+
+        # Recalculate running balances
+        starting_cash = Decimal(scenario_forecast.get("starting_cash", "0"))
+        current_balance = starting_cash
+
+        for week in weeks:
+            week["starting_balance"] = str(current_balance)
+            cash_in = Decimal(week["cash_in"])
+            cash_out = Decimal(week["cash_out"])
+            net_change = cash_in - cash_out
+            week["net_change"] = str(net_change)
+            ending_balance = current_balance + net_change
+            week["ending_balance"] = str(ending_balance)
+            current_balance = ending_balance
+
+        # Recalculate summary
+        forecast_weeks = [w for w in weeks if w["week_number"] > 0]
+        balances = [Decimal(w["ending_balance"]) for w in forecast_weeks]
+
+        if balances:
+            lowest_balance = min(balances)
+            lowest_week_idx = balances.index(lowest_balance)
+            lowest_week = forecast_weeks[lowest_week_idx]["week_number"]
+        else:
+            lowest_balance = starting_cash
+            lowest_week = 1
+
+        total_cash_in = sum(Decimal(w["cash_in"]) for w in forecast_weeks)
+        total_cash_out = sum(Decimal(w["cash_out"]) for w in forecast_weeks)
+
+        # Runway calculation
+        runway_weeks = 13
+        for i, balance in enumerate(balances):
+            if balance <= 0:
+                runway_weeks = i + 1
+                break
+
+        scenario_forecast["summary"] = {
+            "lowest_cash_week": lowest_week,
+            "lowest_cash_amount": str(lowest_balance),
+            "total_cash_in": str(total_cash_in),
+            "total_cash_out": str(total_cash_out),
+            "runway_weeks": runway_weeks,
+        }
+
+        return scenario_forecast
 
     def _apply_delta_to_events(
         self,
@@ -1666,64 +1894,93 @@ class ScenarioPipeline:
         self,
         definition: ScenarioDefinition,
         delta: ScenarioDelta,
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """
         Stage 7: Commit scenario deltas to canonical data.
 
         This is the only stage that modifies canonical data.
+
+        V4 Implementation:
+        - Uses ScenarioCommitService for schedule-based deltas
+        - Falls back to legacy CashEvent-based approach for legacy deltas
         """
-        try:
-            # Apply created events
-            for created in delta.created_events:
-                new_event = CashEvent(
-                    id=created.event_id,
-                    user_id=definition.user_id,
-                    date=datetime.fromisoformat(created.event_data["date"]).date(),
-                    amount=Decimal(str(created.event_data["amount"])),
-                    direction=created.event_data["direction"],
-                    event_type=created.event_data.get("event_type", "manual"),
-                    category=created.event_data.get("category"),
-                    confidence=created.event_data.get("confidence", "medium"),
-                    confidence_reason=f"scenario_{definition.scenario_id}",
-                    is_recurring=created.event_data.get("is_recurring", False),
-                    recurrence_pattern=created.event_data.get("recurrence_pattern"),
-                )
-                self.db.add(new_event)
+        # Check if we have schedule-based deltas (V4) or legacy event deltas
+        has_schedule_deltas = (
+            len(delta.created_schedules) > 0 or
+            len(delta.updated_schedules) > 0 or
+            len(delta.deleted_schedule_ids) > 0 or
+            len(delta.created_agreements) > 0 or
+            len(delta.deactivated_agreement_ids) > 0
+        )
 
-            # Apply updated events
-            for updated in delta.updated_events:
-                result = await self.db.execute(
-                    select(CashEvent).where(CashEvent.id == updated.original_event_id)
-                )
-                event = result.scalar_one_or_none()
-                if event:
-                    for key, value in updated.event_data.items():
-                        if key == "date":
-                            event.date = datetime.fromisoformat(value).date()
-                        elif key == "amount":
-                            event.amount = Decimal(str(value))
-                        elif hasattr(event, key):
-                            setattr(event, key, value)
-
-            # Apply deleted events
-            for event_id in delta.deleted_event_ids:
-                result = await self.db.execute(
-                    select(CashEvent).where(CashEvent.id == event_id)
-                )
-                event = result.scalar_one_or_none()
-                if event:
-                    await self.db.delete(event)
+        if has_schedule_deltas:
+            # V4: Use ScenarioCommitService for ObligationSchedule-based commits
+            commit_service = ScenarioCommitService(self.db, definition.user_id)
+            results = await commit_service.commit_scenario(definition, delta)
 
             # Update scenario status
             definition.status = ScenarioStatusEnum.CONFIRMED
             definition.confirmed_at = datetime.now()
 
-            await self.db.commit()
-            return True
+            return results
+        else:
+            # Legacy: CashEvent-based commit
+            try:
+                # Apply created events
+                for created in delta.created_events:
+                    new_event = CashEvent(
+                        id=created.event_id,
+                        user_id=definition.user_id,
+                        date=datetime.fromisoformat(created.event_data["date"]).date(),
+                        amount=Decimal(str(created.event_data["amount"])),
+                        direction=created.event_data["direction"],
+                        event_type=created.event_data.get("event_type", "manual"),
+                        category=created.event_data.get("category"),
+                        confidence=created.event_data.get("confidence", "medium"),
+                        confidence_reason=f"scenario_{definition.scenario_id}",
+                        is_recurring=created.event_data.get("is_recurring", False),
+                        recurrence_pattern=created.event_data.get("recurrence_pattern"),
+                    )
+                    self.db.add(new_event)
 
-        except Exception as e:
-            await self.db.rollback()
-            raise e
+                # Apply updated events
+                for updated in delta.updated_events:
+                    result = await self.db.execute(
+                        select(CashEvent).where(CashEvent.id == updated.original_event_id)
+                    )
+                    event = result.scalar_one_or_none()
+                    if event:
+                        for key, value in updated.event_data.items():
+                            if key == "date":
+                                event.date = datetime.fromisoformat(value).date()
+                            elif key == "amount":
+                                event.amount = Decimal(str(value))
+                            elif hasattr(event, key):
+                                setattr(event, key, value)
+
+                # Apply deleted events
+                for event_id in delta.deleted_event_ids:
+                    result = await self.db.execute(
+                        select(CashEvent).where(CashEvent.id == event_id)
+                    )
+                    event = result.scalar_one_or_none()
+                    if event:
+                        await self.db.delete(event)
+
+                # Update scenario status
+                definition.status = ScenarioStatusEnum.CONFIRMED
+                definition.confirmed_at = datetime.now()
+
+                await self.db.commit()
+                return {
+                    "events_created": len(delta.created_events),
+                    "events_updated": len(delta.updated_events),
+                    "events_deleted": len(delta.deleted_event_ids),
+                }
+
+            except Exception as e:
+                await self.db.rollback()
+                raise e
 
     # =========================================================================
     # PIPELINE STAGE 8: DISCARD SCENARIO

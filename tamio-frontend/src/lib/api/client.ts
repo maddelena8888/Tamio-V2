@@ -2,6 +2,7 @@
 // API Client for Tamio Backend
 // ============================================================================
 
+import { toast } from 'sonner';
 import type { ApiError } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
@@ -34,12 +35,14 @@ export function clearAuth() {
 export class ApiClientError extends Error {
   status: number;
   detail: string;
+  isDemo: boolean;
 
-  constructor(message: string, status: number, detail?: string) {
+  constructor(message: string, status: number, detail?: string, isDemo?: boolean) {
     super(message);
     this.name = 'ApiClientError';
     this.status = status;
     this.detail = detail || message;
+    this.isDemo = isDemo || false;
   }
 }
 
@@ -74,10 +77,24 @@ async function apiFetch<T>(
 
   if (!response.ok) {
     const error = data as ApiError;
+    const isDemo = error.is_demo === true || response.headers.get('X-Demo-Account') === 'true';
+
+    // Show toast for demo account blocked actions
+    if (isDemo && response.status === 403) {
+      toast.error('Demo account is read-only', {
+        description: 'Sign up to save your changes and create your own data.',
+        action: {
+          label: 'Sign up',
+          onClick: () => window.location.href = '/signup',
+        },
+      });
+    }
+
     throw new ApiClientError(
       error.detail || 'An error occurred',
       response.status,
-      error.detail
+      error.detail,
+      isDemo
     );
   }
 

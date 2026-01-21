@@ -39,44 +39,38 @@ import {
   disconnectXero,
   syncXero,
 } from '@/lib/api/xero';
-import {
-  getQuickBooksStatus,
-  getQuickBooksConnectUrl,
-  disconnectQuickBooks,
-  syncQuickBooks,
-  type QuickBooksConnectionStatus,
-} from '@/lib/api/quickbooks';
 import { getRules, createRule, updateRule } from '@/lib/api/scenarios';
+import { changePassword } from '@/lib/api/auth';
 import type { XeroConnectionStatus, FinancialRule } from '@/lib/api/types';
 
 export default function Settings() {
   const { user, logout } = useAuth();
   const [xeroStatus, setXeroStatus] = useState<XeroConnectionStatus | null>(null);
-  const [quickBooksStatus, setQuickBooksStatus] = useState<QuickBooksConnectionStatus | null>(null);
   const [rules, setRules] = useState<FinancialRule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isSyncingQB, setIsSyncingQB] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isConnectingQB, setIsConnectingQB] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const [bufferMonths, setBufferMonths] = useState('3');
   const [showDisconnectDialog, setShowDisconnectDialog] = useState(false);
-  const [showDisconnectQBDialog, setShowDisconnectQBDialog] = useState(false);
+  const [showPasswordDialog, setShowPasswordDialog] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
 
   useEffect(() => {
     if (!user) return;
 
     const fetchData = async () => {
       try {
-        const [xeroData, quickBooksData, rulesData] = await Promise.all([
+        const [xeroData, rulesData] = await Promise.all([
           getXeroStatus(user.id).catch(() => null),
-          getQuickBooksStatus(user.id).catch(() => null),
           getRules(user.id).catch(() => []),
         ]);
 
         setXeroStatus(xeroData);
-        setQuickBooksStatus(quickBooksData);
         setRules(rulesData);
 
         // Set buffer months from existing rule
@@ -94,9 +88,9 @@ export default function Settings() {
 
     fetchData();
 
-    // Check URL for Xero or QuickBooks callback
+    // Check URL for Xero callback
     const params = new URLSearchParams(window.location.search);
-    if (params.get('xero_connected') === 'true' || params.get('quickbooks_connected') === 'true') {
+    if (params.get('xero_connected') === 'true') {
       fetchData();
       // Clean URL
       window.history.replaceState({}, '', window.location.pathname);
@@ -146,49 +140,6 @@ export default function Settings() {
     }
   };
 
-  const handleConnectQuickBooks = async () => {
-    if (!user) return;
-    setIsConnectingQB(true);
-    try {
-      const { auth_url } = await getQuickBooksConnectUrl(user.id);
-      window.location.href = auth_url;
-    } catch (error) {
-      console.error('Failed to get QuickBooks auth URL:', error);
-      setIsConnectingQB(false);
-    }
-  };
-
-  const handleDisconnectQuickBooks = async () => {
-    if (!user) return;
-    try {
-      await disconnectQuickBooks(user.id);
-      setQuickBooksStatus({ ...quickBooksStatus!, is_connected: false });
-      setShowDisconnectQBDialog(false);
-    } catch (error) {
-      console.error('Failed to disconnect QuickBooks:', error);
-    }
-  };
-
-  const handleSyncQuickBooks = async () => {
-    if (!user) return;
-    setIsSyncingQB(true);
-    setSyncMessage('');
-    try {
-      const result = await syncQuickBooks(user.id, 'full');
-      const created = Object.values(result.records_created).reduce((a, b) => a + b, 0);
-      const updated = Object.values(result.records_updated).reduce((a, b) => a + b, 0);
-      setSyncMessage(`QuickBooks sync complete: ${created} created, ${updated} updated`);
-      // Refresh status
-      const statusData = await getQuickBooksStatus(user.id);
-      setQuickBooksStatus(statusData);
-    } catch (error) {
-      console.error('Failed to sync QuickBooks:', error);
-      setSyncMessage('QuickBooks sync failed. Please try again.');
-    } finally {
-      setIsSyncingQB(false);
-    }
-  };
-
   const handleUpdateBufferRule = async () => {
     if (!user) return;
     try {
@@ -211,6 +162,38 @@ export default function Settings() {
       setSyncMessage('Buffer rule updated successfully');
     } catch (error) {
       console.error('Failed to update buffer rule:', error);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    setPasswordError('');
+
+    if (newPassword.length < 8) {
+      setPasswordError('New password must be at least 8 characters');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError('Passwords do not match');
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      await changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setSyncMessage('Password changed successfully');
+      setShowPasswordDialog(false);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to change password';
+      setPasswordError(errorMessage);
+    } finally {
+      setIsChangingPassword(false);
     }
   };
 
@@ -345,116 +328,6 @@ export default function Settings() {
         </NeuroCardContent>
       </NeuroCard>
 
-      {/* QuickBooks Integration */}
-      <NeuroCard>
-        <NeuroCardHeader>
-          <NeuroCardTitle className="flex items-center gap-2 font-league-spartan text-xl font-bold text-gunmetal">
-            <div className="w-10 h-10 rounded-xl bg-white/60 backdrop-blur-sm border border-white/30 flex items-center justify-center">
-              <Link2 className="h-5 w-5 text-[#2CA01C]" />
-            </div>
-            QuickBooks Integration
-          </NeuroCardTitle>
-          <NeuroCardDescription>
-            Connect your QuickBooks Online account to automatically sync financial data
-          </NeuroCardDescription>
-        </NeuroCardHeader>
-        <NeuroCardContent className="space-y-4">
-          {quickBooksStatus?.is_connected ? (
-            <>
-              <div className="flex items-center justify-between p-4 bg-white/40 backdrop-blur-sm rounded-xl border border-white/20">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-[#2CA01C] flex items-center justify-center">
-                    <Check className="h-5 w-5 text-white" />
-                  </div>
-                  <div>
-                    <p className="font-medium text-gunmetal">{quickBooksStatus.company_name || 'Connected'}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Last synced:{' '}
-                      {quickBooksStatus.last_sync_at
-                        ? new Date(quickBooksStatus.last_sync_at).toLocaleDateString()
-                        : 'Never'}
-                    </p>
-                  </div>
-                </div>
-                <Badge className="bg-lime text-gunmetal font-semibold">Connected</Badge>
-              </div>
-
-              {quickBooksStatus.sync_error && (
-                <Alert variant="destructive">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription>{quickBooksStatus.sync_error}</AlertDescription>
-                </Alert>
-              )}
-
-              <div className="flex gap-3">
-                <Button onClick={handleSyncQuickBooks} disabled={isSyncingQB} className="rounded-full">
-                  {isSyncingQB ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Syncing...
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Sync Now
-                    </>
-                  )}
-                </Button>
-                <Dialog open={showDisconnectQBDialog} onOpenChange={setShowDisconnectQBDialog}>
-                  <DialogTrigger asChild>
-                    <Button variant="outline" className="rounded-full">
-                      <Unlink className="mr-2 h-4 w-4" />
-                      Disconnect
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Disconnect QuickBooks</DialogTitle>
-                      <DialogDescription>
-                        Are you sure you want to disconnect your QuickBooks account? Your existing data
-                        will remain, but automatic syncing will stop.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setShowDisconnectQBDialog(false)}>
-                        Cancel
-                      </Button>
-                      <Button variant="destructive" onClick={handleDisconnectQuickBooks}>
-                        Disconnect
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-              </div>
-            </>
-          ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Connect QuickBooks to automatically import your customers, invoices, bills, and bank
-                balances.
-              </p>
-              <Button
-                onClick={handleConnectQuickBooks}
-                disabled={isConnectingQB}
-                className="rounded-full bg-[#2CA01C] hover:bg-[#249017] text-white"
-              >
-                {isConnectingQB ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Connecting...
-                  </>
-                ) : (
-                  <>
-                    <Link2 className="mr-2 h-4 w-4" />
-                    Connect to QuickBooks
-                  </>
-                )}
-              </Button>
-            </div>
-          )}
-        </NeuroCardContent>
-      </NeuroCard>
-
       {/* Cash Buffer Rule */}
       <NeuroCard>
         <NeuroCardHeader>
@@ -515,7 +388,83 @@ export default function Settings() {
             <Label className="text-gunmetal font-medium">Base Currency</Label>
             <Input value={user?.base_currency || 'USD'} disabled className="bg-white/60 backdrop-blur-sm border-white/30" />
           </div>
-          <div className="pt-4 border-t border-white/20">
+          <div className="pt-4 border-t border-white/20 flex gap-3">
+            <Dialog open={showPasswordDialog} onOpenChange={(open) => {
+              setShowPasswordDialog(open);
+              if (!open) {
+                setCurrentPassword('');
+                setNewPassword('');
+                setConfirmPassword('');
+                setPasswordError('');
+              }
+            }}>
+              <DialogTrigger asChild>
+                <Button className="rounded-full">
+                  Change Password
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Change Password</DialogTitle>
+                  <DialogDescription>
+                    Enter your current password and choose a new password.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  {passwordError && (
+                    <Alert variant="destructive">
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertDescription>{passwordError}</AlertDescription>
+                    </Alert>
+                  )}
+                  <div className="space-y-2">
+                    <Label htmlFor="current-password">Current Password</Label>
+                    <Input
+                      id="current-password"
+                      type="password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      placeholder="Enter current password"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="new-password">New Password</Label>
+                    <Input
+                      id="new-password"
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="Enter new password"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="confirm-password">Confirm New Password</Label>
+                    <Input
+                      id="confirm-password"
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm new password"
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setShowPasswordDialog(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleChangePassword} disabled={isChangingPassword}>
+                    {isChangingPassword ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Changing...
+                      </>
+                    ) : (
+                      'Change Password'
+                    )}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
             <Button variant="destructive" onClick={logout} className="rounded-full">
               Sign Out
             </Button>

@@ -200,9 +200,14 @@ def update_client_billing_from_repeating_invoice(
         "xero_repeating_invoice_id": repeating_invoice.get("repeating_invoice_id")
     }
 
-    # Preserve existing xero_contact_id if present
-    if client.billing_config and "xero_contact_id" in client.billing_config:
-        billing_config["xero_contact_id"] = client.billing_config["xero_contact_id"]
+    # Preserve existing fields from current billing_config
+    if client.billing_config:
+        # Preserve xero_contact_id
+        if "xero_contact_id" in client.billing_config:
+            billing_config["xero_contact_id"] = client.billing_config["xero_contact_id"]
+        # Preserve outstanding_invoices (from invoice sync)
+        if "outstanding_invoices" in client.billing_config:
+            billing_config["outstanding_invoices"] = client.billing_config["outstanding_invoices"]
 
     client.billing_config = billing_config
 

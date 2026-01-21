@@ -9,7 +9,7 @@ from app.database import get_db
 from app.scenarios import models, schemas
 from app.scenarios.engine import build_scenario_layer, compute_scenario_forecast
 from app.scenarios.rule_engine import evaluate_rules, generate_decision_signals, suggest_scenarios
-from app.forecast.engine import calculate_13_week_forecast
+from app.forecast.engine_v2 import calculate_13_week_forecast
 from app.scenarios.pipeline.dependencies import get_suggested_scenarios as get_dependent_suggestions
 from app.scenarios.pipeline.types import ScenarioTypeEnum
 
@@ -113,6 +113,8 @@ async def create_scenario(
             scenario_type=data.scenario_type.value if hasattr(data.scenario_type, 'value') else data.scenario_type,
             entry_path=data.entry_path,
             suggested_reason=data.suggested_reason,
+            source_alert_id=data.source_alert_id,
+            source_detection_type=data.source_detection_type,
             scope_config=data.scope_config,
             parameters=data.parameters,
             parent_scenario_id=data.parent_scenario_id,
@@ -241,6 +243,13 @@ async def build_scenario(
     scenario = result.scalar_one_or_none()
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
+
+    # Clear any existing scenario events to ensure fresh build
+    await db.execute(
+        delete(models.ScenarioEvent).where(
+            models.ScenarioEvent.scenario_id == scenario_id
+        )
+    )
 
     # Build scenario layer
     scenario_events = await build_scenario_layer(db, scenario)

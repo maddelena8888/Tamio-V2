@@ -2,10 +2,12 @@
 from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal
-from typing import List
+from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_
 
 from app.data import models
+from app.data.obligations.models import ObligationSchedule, ObligationAgreement
 
 
 async def generate_events_from_client(
@@ -69,6 +71,13 @@ def _generate_retainer_events(
     amount = Decimal(str(config.get("amount", 0)))
     payment_terms = config.get("payment_terms", "net_30")
     billing_day = config.get("billing_day", "start_of_month")
+    # Support both invoice_day (schema) and day_of_month (frontend) field names
+    # Ensure we get an integer value
+    raw_invoice_day = config.get("invoice_day") or config.get("day_of_month")
+    try:
+        invoice_day = int(raw_invoice_day) if raw_invoice_day else 1
+    except (ValueError, TypeError):
+        invoice_day = 1
 
     # Parse payment terms (e.g., "net_30" -> 30 days)
     payment_delay_days = int(payment_terms.replace("net_", "")) if "net_" in payment_terms else 0
@@ -76,10 +85,13 @@ def _generate_retainer_events(
     current_date = start_date
     while current_date <= end_date:
         # Calculate billing date
-        if billing_day == "start_of_month":
+        if billing_day == "start_of_month" and invoice_day == 1:
             billing_date = current_date.replace(day=1)
         else:
-            billing_date = current_date
+            try:
+                billing_date = current_date.replace(day=invoice_day)
+            except ValueError:
+                billing_date = current_date.replace(day=1)
 
         # Payment date = billing date + payment terms
         payment_date = billing_date + timedelta(days=payment_delay_days)
@@ -255,3 +267,205 @@ async def generate_events_from_bucket(
         await db.refresh(event)
 
     return events
+
+
+# =============================================================================
+# New Canonical Approach: Generate CashEvents from ObligationSchedules
+# =============================================================================
+
+async def generate_events_from_schedules(
+    db: AsyncSession,
+    user_id: str,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    skip_existing: bool = True
+) -> List[models.CashEvent]:
+    """
+    Generate CashEvents from ObligationSchedules.
+
+    This is the new canonical approach for generating cash events:
+    - Query schedules in date range with status in ['scheduled', 'due']
+    - Skip if CashEvent already exists for schedule (idempotent)
+    - Set direction based on obligation's client_id vs expense_bucket_id
+
+    Args:
+        db: Database session
+        user_id: User ID to generate events for
+        from_date: Start date for event generation (default: today)
+        to_date: End date for event generation (default: today + 13 weeks)
+        skip_existing: If True, skip schedules that already have CashEvents
+
+    Returns:
+        List of generated CashEvent models
+    """
+    if from_date is None:
+        from_date = date.today()
+    if to_date is None:
+        to_date = from_date + timedelta(weeks=13)
+
+    # Query obligation schedules in date range
+    query = (
+        select(ObligationSchedule)
+        .join(ObligationAgreement)
+        .where(
+            and_(
+                ObligationAgreement.user_id == user_id,
+                ObligationSchedule.due_date >= from_date,
+                ObligationSchedule.due_date <= to_date,
+                ObligationSchedule.status.in_(["scheduled", "due"])
+            )
+        )
+    )
+
+    result = await db.execute(query)
+    schedules = result.scalars().all()
+
+    events = []
+
+    for schedule in schedules:
+        # Check if event already exists for this schedule (idempotent)
+        if skip_existing:
+            existing_query = select(models.CashEvent).where(
+                models.CashEvent.obligation_schedule_id == schedule.id
+            )
+            existing_result = await db.execute(existing_query)
+            if existing_result.scalar_one_or_none():
+                continue  # Skip, event already exists
+
+        # Get the parent obligation to determine direction and other fields
+        obligation = schedule.obligation
+
+        # Determine direction and event type based on source entity
+        if obligation.client_id:
+            # Revenue obligation (from client)
+            direction = "in"
+            event_type = "expected_revenue"
+            client_id = obligation.client_id
+            bucket_id = None
+        elif obligation.expense_bucket_id:
+            # Expense obligation (from expense bucket)
+            direction = "out"
+            event_type = "expected_expense"
+            client_id = None
+            bucket_id = obligation.expense_bucket_id
+        else:
+            # Generic obligation - default to expense (conservative)
+            direction = "out"
+            event_type = "expected_expense"
+            client_id = None
+            bucket_id = None
+
+        # Map obligation frequency to recurrence pattern
+        recurrence_pattern = _map_frequency_to_pattern(obligation.frequency)
+        is_recurring = obligation.frequency not in [None, "one_time"]
+
+        # Map confidence levels
+        confidence = schedule.confidence or "medium"
+
+        event = models.CashEvent(
+            user_id=user_id,
+            date=schedule.due_date,
+            week_number=_calculate_week_number(schedule.due_date, from_date),
+            amount=schedule.estimated_amount,
+            direction=direction,
+            event_type=event_type,
+            category=obligation.category,
+            client_id=client_id,
+            bucket_id=bucket_id,
+            obligation_schedule_id=schedule.id,  # Link to source schedule
+            confidence=confidence,
+            confidence_reason=f"from_obligation_{schedule.estimate_source}",
+            is_recurring=is_recurring,
+            recurrence_pattern=recurrence_pattern,
+            notes=schedule.notes or f"Generated from obligation: {obligation.vendor_name or obligation.obligation_type}"
+        )
+
+        events.append(event)
+        db.add(event)
+
+    if events:
+        await db.commit()
+        for event in events:
+            await db.refresh(event)
+
+    return events
+
+
+def _map_frequency_to_pattern(frequency: Optional[str]) -> Optional[str]:
+    """Map obligation frequency to CashEvent recurrence pattern."""
+    frequency_map = {
+        "weekly": "weekly",
+        "bi_weekly": "bi-weekly",
+        "monthly": "monthly",
+        "quarterly": "quarterly",
+        "annually": "yearly",
+        "one_time": None,
+    }
+    return frequency_map.get(frequency)
+
+
+def _calculate_week_number(event_date: date, reference_date: date) -> int:
+    """Calculate week number relative to reference date."""
+    delta = event_date - reference_date
+    return max(0, delta.days // 7)
+
+
+async def regenerate_events_for_obligation(
+    db: AsyncSession,
+    obligation_id: str,
+    delete_future_only: bool = True
+) -> List[models.CashEvent]:
+    """
+    Regenerate CashEvents for a specific obligation.
+
+    This is useful when an obligation is updated and its schedules change.
+
+    Args:
+        db: Database session
+        obligation_id: ID of the obligation to regenerate events for
+        delete_future_only: If True, only delete events from today forward
+
+    Returns:
+        List of newly generated CashEvent models
+    """
+    from sqlalchemy import delete as sql_delete
+
+    # Get the obligation
+    obligation_query = select(ObligationAgreement).where(
+        ObligationAgreement.id == obligation_id
+    )
+    result = await db.execute(obligation_query)
+    obligation = result.scalar_one_or_none()
+
+    if not obligation:
+        return []
+
+    # Get schedule IDs for this obligation
+    schedule_query = select(ObligationSchedule.id).where(
+        ObligationSchedule.obligation_id == obligation_id
+    )
+    schedule_result = await db.execute(schedule_query)
+    schedule_ids = [s[0] for s in schedule_result.fetchall()]
+
+    if not schedule_ids:
+        return []
+
+    # Delete existing events linked to these schedules
+    delete_conditions = [
+        models.CashEvent.obligation_schedule_id.in_(schedule_ids)
+    ]
+    if delete_future_only:
+        delete_conditions.append(models.CashEvent.date >= date.today())
+
+    await db.execute(
+        sql_delete(models.CashEvent).where(and_(*delete_conditions))
+    )
+    await db.commit()
+
+    # Generate new events from schedules
+    return await generate_events_from_schedules(
+        db,
+        user_id=obligation.user_id,
+        from_date=date.today() if delete_future_only else None,
+        skip_existing=False  # We just deleted them
+    )

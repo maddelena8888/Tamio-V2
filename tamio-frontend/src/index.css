@@ -56,6 +56,7 @@
   --color-tomato: var(--tomato);
   --color-coral: var(--tomato);
   --color-lime: var(--lime);
+  --color-lime-dark: var(--lime-dark);
   --color-mimi-pink: var(--mimi-pink);
   --color-gunmetal: var(--gunmetal);
   --color-navy: var(--gunmetal);
@@ -85,6 +86,7 @@
   /* Tamio Brand Colors */
   --tomato: #FF4F3F;
   --lime: #C5FF35;
+  --lime-dark: #7CB518;
   --mimi-pink: #FFD6F0;
   --gunmetal: #112331;
   --mint-cream: #F2F8F5;
@@ -324,5 +326,75 @@
   .backdrop-blur-xs {
     backdrop-filter: blur(var(--backdrop-blur-xs));
     -webkit-backdrop-filter: blur(var(--backdrop-blur-xs));
+  }
+
+  /* Glassmorphic alert severity tints */
+  .alert-tint-urgent {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 79, 63, 0.12) 0%,
+      rgba(255, 255, 255, 0.5) 100%
+    );
+    border: 1px solid rgba(255, 79, 63, 0.2);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  .alert-tint-high {
+    background: linear-gradient(
+      135deg,
+      rgba(234, 179, 8, 0.12) 0%,
+      rgba(255, 255, 255, 0.5) 100%
+    );
+    border: 1px solid rgba(234, 179, 8, 0.2);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  .alert-tint-normal {
+    background: linear-gradient(
+      135deg,
+      rgba(197, 255, 53, 0.1) 0%,
+      rgba(255, 255, 255, 0.5) 100%
+    );
+    border: 1px solid rgba(197, 255, 53, 0.15);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  /* Action status tints */
+  .action-tint {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.5) 0%,
+      rgba(255, 255, 255, 0.3) 100%
+    );
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  /* Suggested prompt interactive styles */
+  .suggested-prompt {
+    background: rgba(255, 255, 255, 0.3);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+
+  .suggested-prompt:hover {
+    background: rgba(255, 255, 255, 0.6);
+    border-color: rgba(197, 255, 53, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(17, 35, 49, 0.08), 0 2px 4px rgba(197, 255, 53, 0.1);
+  }
+
+  .suggested-prompt:active {
+    transform: translateY(0);
+    background: rgba(197, 255, 53, 0.15);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   }
 }

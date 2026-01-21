@@ -1,5 +1,5 @@
 """Client model for revenue sources."""
-from sqlalchemy import Column, String, DateTime, Text, ForeignKey, Boolean
+from sqlalchemy import Column, String, DateTime, Text, ForeignKey, Boolean, Integer, Numeric
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -26,6 +26,19 @@ class Client(Base):
     payment_behavior = Column(String, nullable=True)  # "on_time" | "delayed" | "unknown"
     churn_risk = Column(String, nullable=True)  # "low" | "medium" | "high"
     scope_risk = Column(String, nullable=True)  # "low" | "medium" | "high"
+
+    # V4 Required Fields
+    # Payment pattern: average days late (0 = on time, positive = days late)
+    avg_payment_delay_days = Column(Integer, nullable=True, default=0)
+
+    # Relationship type: strategic clients get softer tone, transactional get firmer
+    relationship_type = Column(String, nullable=True)  # "strategic" | "transactional" | "managed"
+
+    # Revenue concentration: what % of total revenue does this client represent?
+    revenue_percent = Column(Numeric(precision=5, scale=2), nullable=True)  # e.g., 15.50 = 15.5%
+
+    # Unified risk level for detection/preparation decisions
+    risk_level = Column(String, nullable=True)  # "low" | "medium" | "high" | "critical"
 
     # Billing Configuration (JSONB - adapts by client_type)
     billing_config = Column(JSONB, nullable=False, default=dict)
@@ -60,3 +73,12 @@ class Client(Base):
     # Relationships
     user = relationship("User", back_populates="clients")
     cash_events = relationship("CashEvent", back_populates="client", cascade="all, delete-orphan")
+
+    # One-to-Many: Client -> ObligationAgreement
+    # Each client can have multiple obligations (retainer, project milestones, usage fees, etc.)
+    obligations = relationship(
+        "ObligationAgreement",
+        back_populates="client",
+        cascade="all, delete-orphan",
+        foreign_keys="[ObligationAgreement.client_id]"
+    )

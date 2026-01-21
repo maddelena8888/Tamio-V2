@@ -3,7 +3,29 @@
 // ============================================================================
 
 // Base Types
-export type Currency = 'USD' | 'EUR' | 'GBP' | 'AUD' | 'CAD';
+export type Currency = 'USD' | 'EUR' | 'GBP' | 'AED' | 'AUD' | 'CAD' | 'CHF' | 'SGD' | 'JPY' | 'NZD';
+
+// Business Profile Types
+export type Industry =
+  | 'professional_services'
+  | 'construction'
+  | 'real_estate'
+  | 'healthcare'
+  | 'technology'
+  | 'creative'
+  | 'hospitality'
+  | 'manufacturing'
+  | 'other';
+
+export type ProfessionalSubcategory =
+  | 'marketing_agency'
+  | 'consulting'
+  | 'legal'
+  | 'accounting'
+  | 'design_agency'
+  | 'it_services';
+
+export type RevenueRange = '0-500k' | '500k-2m' | '2m-5m' | '5m-15m' | '15m+';
 export type ClientType = 'retainer' | 'project' | 'usage' | 'mixed';
 export type ClientStatus = 'active' | 'paused' | 'deleted';
 export type PaymentBehavior = 'on_time' | 'delayed' | 'unknown';
@@ -22,6 +44,26 @@ export interface User {
   company_name?: string;
   base_currency: Currency;
   has_completed_onboarding: boolean;
+  industry?: Industry;
+  subcategory?: ProfessionalSubcategory;
+  revenue_range?: RevenueRange;
+  business_profile_completed_at?: string;
+  is_demo?: boolean;
+}
+
+export interface BusinessProfileRequest {
+  industry: Industry;
+  subcategory?: ProfessionalSubcategory;
+  revenue_range: RevenueRange;
+  base_currency: Currency;
+}
+
+export interface BusinessProfileResponse {
+  industry: Industry | null;
+  subcategory: ProfessionalSubcategory | null;
+  revenue_range: RevenueRange | null;
+  base_currency: Currency;
+  is_complete: boolean;
 }
 
 export interface AuthResponse {
@@ -70,6 +112,8 @@ export interface BillingConfig {
   frequency?: Frequency;
   day_of_month?: number;
   payment_terms?: string;
+  total_value?: string;  // For project-type clients
+  typical_amount?: string;  // For usage-type clients
   milestones?: Array<{
     name: string;
     amount: string;
@@ -206,6 +250,7 @@ export interface ForecastEventSummary {
   category: string | null;
   confidence: ConfidenceLevel;
   confidence_reason?: string;
+  source_id?: string;
   source_name?: string;
   source_type?: string;
 }
@@ -282,7 +327,7 @@ export type ScenarioType =
   | 'payment_delay_out';
 
 export type ScenarioStatus = 'draft' | 'active' | 'saved' | 'discarded' | 'confirmed';
-export type EntryPath = 'user_defined' | 'tamio_suggested';
+export type EntryPath = 'user_defined' | 'tamio_suggested' | 'alert_derived';
 
 export interface Scenario {
   id: string;
@@ -292,6 +337,8 @@ export interface Scenario {
   scenario_type: ScenarioType;
   entry_path: EntryPath;
   suggested_reason: string | null;
+  source_alert_id: string | null;  // Link to originating detection alert
+  source_detection_type: string | null;  // Detection type that triggered suggestion
   scope_config: Record<string, unknown>;
   parameters: Record<string, unknown>;
   status: ScenarioStatus;
@@ -308,6 +355,8 @@ export interface ScenarioCreate {
   scenario_type: ScenarioType;
   entry_path: EntryPath;
   suggested_reason?: string;
+  source_alert_id?: string;  // Link to originating detection alert
+  source_detection_type?: string;  // Detection type that triggered suggestion
   scope_config: Record<string, unknown>;
   parameters: Record<string, unknown>;
   parent_scenario_id?: string;
@@ -337,6 +386,11 @@ export interface ScenarioSuggestion {
   description: string;
   prefill_params: Record<string, unknown>;
   priority: 'high' | 'medium' | 'low';
+  source_alert_id?: string | null;  // Link to originating detection alert
+  source_detection_type?: string | null;  // Detection type that triggered suggestion
+  buffer_impact?: string;  // Human-readable buffer impact (e.g., "-2.1 weeks buffer")
+  buffer_impact_pct?: number;  // Percentage impact on buffer
+  risk_context?: string;  // Contextual reason for the suggestion
 }
 
 // Financial Rules
@@ -351,51 +405,6 @@ export interface FinancialRule {
   evaluation_scope: string;
   created_at: string;
   updated_at: string | null;
-}
-
-// TAMI Chat Types
-export type ChatMode =
-  | 'explain_forecast'
-  | 'suggest_scenarios'
-  | 'build_scenario'
-  | 'goal_planning'
-  | 'clarify';
-
-export interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp?: string;
-}
-
-export interface SuggestedAction {
-  label: string;
-  action: 'call_tool' | 'none';
-  tool_name: string | null;
-  tool_args: Record<string, unknown> | null;
-}
-
-export interface UIHints {
-  show_scenario_banner: boolean;
-  suggested_actions: SuggestedAction[];
-}
-
-export interface ChatResponseContent {
-  message_markdown: string;
-  mode: ChatMode;
-  ui_hints: UIHints;
-}
-
-export interface ChatResponse {
-  response: ChatResponseContent;
-  context_summary: Record<string, unknown>;
-  tool_calls_made: string[];
-}
-
-export interface ChatRequest {
-  user_id: string;
-  message: string;
-  conversation_history: ChatMessage[];
-  active_scenario_id: string | null;
 }
 
 // Xero Integration Types
@@ -521,293 +530,53 @@ export interface PaymentEvent {
 export interface ApiError {
   detail: string;
   status?: number;
+  is_demo?: boolean;
 }
 
-// =============================================================================
-// Insights Types
-// =============================================================================
+// ============================================================================
+// TAMI Chat Types
+// ============================================================================
 
-// Income Behaviour
-export interface ClientPaymentBehaviour {
-  client_id: string;
-  client_name: string;
-  payment_behavior: PaymentBehavior;
-  monthly_amount: string;
-  percentage_of_revenue: string;
-  risk_level: RiskLevel;
+export type ChatMode =
+  | 'explain_forecast'
+  | 'suggest_scenarios'
+  | 'build_scenario'
+  | 'goal_planning'
+  | 'clarify';
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: string;
 }
 
-export interface RevenueConcentration {
-  client_id: string;
-  client_name: string;
-  monthly_amount: string;
-  percentage: string;
-  is_high_concentration: boolean;
+export interface SuggestedAction {
+  label: string;
+  action: 'call_tool' | 'none';
+  tool_name: string | null;
+  tool_args: Record<string, unknown> | null;
 }
 
-export interface IncomeBehaviourInsights {
-  total_monthly_revenue: string;
-  clients_with_delayed_payments: number;
-  clients_with_high_concentration: number;
-  revenue_at_risk_percentage: string;
-  payment_behaviour: ClientPaymentBehaviour[];
-  revenue_concentration: RevenueConcentration[];
-  recommendations: string[];
+export interface UIHints {
+  show_scenario_banner: boolean;
+  suggested_actions: SuggestedAction[];
 }
 
-// Expense Behaviour
-export interface ExpenseCategoryTrend {
-  category: string;
-  current_monthly: string;
-  previous_monthly: string;
-  change_percentage: string;
-  trend: 'rising' | 'stable' | 'declining';
-  is_over_budget: boolean;
-  budget_variance: string;
+export interface ChatResponseContent {
+  message_markdown: string;
+  mode: ChatMode;
+  ui_hints: UIHints;
 }
 
-export interface ExpenseBucketDetail {
-  bucket_id: string;
-  name: string;
-  category: string;
-  monthly_amount: string;
-  bucket_type: BucketType;
-  priority: string;
-  is_stable: boolean;
+export interface ChatResponse {
+  response: ChatResponseContent;
+  context_summary: Record<string, unknown>;
+  tool_calls_made: string[];
 }
 
-export interface ExpenseBehaviourInsights {
-  total_monthly_expenses: string;
-  fixed_expenses: string;
-  variable_expenses: string;
-  categories_rising: number;
-  categories_over_budget: number;
-  category_trends: ExpenseCategoryTrend[];
-  expense_details: ExpenseBucketDetail[];
-  recommendations: string[];
-}
-
-// Cash Discipline
-export interface UpcomingRiskWindow {
-  week_number: number;
-  week_start: string;
-  projected_balance: string;
-  target_buffer: string;
-  shortfall: string;
-  severity: 'warning' | 'critical';
-  contributing_factors: string[];
-}
-
-export interface CashDisciplineInsights {
-  current_buffer: string;
-  target_buffer: string;
-  buffer_months: number;
-  buffer_health_score: number;
-  buffer_status: 'healthy' | 'at_risk' | 'critical';
-  days_below_target_last_90: number;
-  buffer_trend: 'improving' | 'stable' | 'declining';
-  upcoming_risks: UpcomingRiskWindow[];
-  weeks_until_risk: number | null;
-  recommendations: string[];
-}
-
-// Traffic Light Status (TAMI Knowledge Framework)
-export interface TrafficLightCondition {
-  condition: string;
-  met: boolean;
-  severity: 'green' | 'amber' | 'red';
-}
-
-export interface TrafficLightStatus {
-  status: 'green' | 'amber' | 'red';
-  label: string; // "Stable", "Watch Closely", "Action Required"
-  meaning: string;
-  conditions_met: TrafficLightCondition[];
-  guidance: string[];
-  tami_message: string;
-  action_window: string | null;
-  urgency: 'none' | 'low' | 'medium' | 'high';
-}
-
-// Summary
-export interface InsightsSummary {
-  traffic_light: TrafficLightStatus;
-  income_health_score: number;
-  expense_health_score: number;
-  cash_discipline_score: number;
-  overall_health_score: number;
-  alerts: string[];
-  top_recommendations: string[];
-}
-
-// Complete Response
-export interface InsightsResponse {
-  summary: InsightsSummary;
-  income_behaviour: IncomeBehaviourInsights;
-  expense_behaviour: ExpenseBehaviourInsights;
-  cash_discipline: CashDisciplineInsights;
-}
-
-// =============================================================================
-// Behavior Insights Types (Phase 4)
-// =============================================================================
-
-export type TriggerSeverity = 'low' | 'medium' | 'high' | 'critical';
-export type TriggerStatus = 'pending' | 'active' | 'dismissed' | 'deferred' | 'expired';
-export type MetricTrend = 'improving' | 'stable' | 'worsening';
-
-// Client Behavior
-export interface ClientConcentration {
-  client_id: string;
-  client_name: string;
-  cash_weighted_share: number;
-  is_high_concentration: boolean;
-}
-
-export interface ClientPaymentReliability {
-  client_id: string;
-  client_name: string;
-  score: number;
-  mean: number;
-  variance: number;
-  trend: MetricTrend;
-  trend_velocity: number;
-  days_late_avg: number;
-}
-
-export interface RevenueAtRisk {
-  total_30_day: string;
-  total_60_day: string;
-  by_client: Array<{
-    client_id: string;
-    client_name: string;
-    amount_at_risk: string;
-    probability: number;
-    reason: string;
-  }>;
-}
-
-export interface ClientBehaviorInsights {
-  concentration: {
-    top_client_share: number;
-    top_3_share: number;
-    hhi_score: number;
-    clients: ClientConcentration[];
-  };
-  payment_reliability: ClientPaymentReliability[];
-  revenue_at_risk: RevenueAtRisk;
-}
-
-// Expense Behavior
-export interface CategoryVolatility {
-  category: string;
-  mean: number;
-  variance: number;
-  std_dev: number;
-  trend: MetricTrend;
-  drift_pct: number;
-}
-
-export interface ExpenseBehaviorInsights {
-  volatility: CategoryVolatility[];
-  discretionary_ratio: {
-    discretionary_pct: number;
-    essential_pct: number;
-    trend: MetricTrend;
-  };
-  upcoming_commitments: Array<{
-    id: string;
-    name: string;
-    amount: string;
-    due_date: string;
-    category: string;
-  }>;
-}
-
-// Cash Discipline
-export interface BufferIntegrity {
-  current_buffer: string;
-  target_buffer: string;
-  buffer_ratio: number;
-  days_below_threshold: number;
-  trend: MetricTrend;
-}
-
-export interface CashDisciplineBehaviorInsights {
-  buffer_integrity: BufferIntegrity;
-  burn_momentum: {
-    current_rate: number;
-    weekly_change: number;
-    trend: MetricTrend;
-  };
-  decision_rate: {
-    reactive_count: number;
-    deliberate_count: number;
-    reactive_ratio: number;
-    trend: MetricTrend;
-  };
-}
-
-// Triggered Scenario
-export interface TriggeredScenario {
-  id: string;
-  trigger_name: string;
-  trigger_description: string;
-  scenario_name: string;
-  scenario_description: string;
-  scenario_type: ScenarioType;
-  scenario_parameters: Record<string, unknown>;
-  severity: TriggerSeverity;
-  estimated_impact: {
-    cash_impact: number;
-    weeks_affected: number;
-    buffer_impact_pct: number;
-    description: string;
-  } | null;
-  recommended_actions: string[];
-  status: TriggerStatus;
-  triggered_at: string;
-  expires_at: string | null;
-}
-
-// Behavior Metrics
-export interface BehaviorMetric {
-  id: string;
+export interface ChatRequest {
   user_id: string;
-  metric_type: string;
-  entity_type: string | null;
-  entity_id: string | null;
-  current_value: number;
-  previous_value: number | null;
-  mean: number | null;
-  variance: number | null;
-  std_dev: number | null;
-  trend: MetricTrend;
-  trend_velocity: number | null;
-  trend_confidence: number | null;
-  threshold_warning: number | null;
-  threshold_critical: number | null;
-  is_higher_better: boolean;
-  is_breached: boolean;
-  is_warning: boolean;
-  data_confidence: number;
-  context_data: Record<string, unknown>;
-  computed_at: string;
-}
-
-// Complete Behavior Response
-export interface BehaviorInsightsResponse {
-  health_score: number;
-  health_label: 'Healthy' | 'At Risk' | 'Critical';
-  client_behavior: ClientBehaviorInsights;
-  expense_behavior: ExpenseBehaviorInsights;
-  cash_discipline: CashDisciplineBehaviorInsights;
-  triggered_scenarios: TriggeredScenario[];
-  pending_scenarios_count: number;
-}
-
-// Trigger Action
-export interface TriggeredScenarioAction {
-  action: 'run_scenario' | 'dismiss' | 'defer';
-  notes?: string;
+  message: string;
+  conversation_history: ChatMessage[];
+  active_scenario_id: string | null;
 }

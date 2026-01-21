@@ -8,6 +8,7 @@ import {
   getStoredUser,
   isAuthenticated,
   completeOnboarding as apiCompleteOnboarding,
+  demoLogin as apiDemoLogin,
 } from '@/lib/api/auth';
 import { getAccessToken } from '@/lib/api/client';
 
@@ -15,8 +16,10 @@ interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  isDemo: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string) => Promise<void>;
+  demoLogin: () => Promise<void>;
   logout: () => void;
   completeOnboarding: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -65,6 +68,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(response.user);
   }, []);
 
+  const demoLogin = useCallback(async () => {
+    const response = await apiDemoLogin();
+    setUser(response.user);
+  }, []);
+
   const logout = useCallback(() => {
     apiLogout();
     setUser(null);
@@ -92,8 +100,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         isLoading,
         isAuthenticated: isAuthenticated() && !!user,
+        isDemo: user?.is_demo ?? false,
         login,
         signup,
+        demoLogin,
         logout,
         completeOnboarding,
         refreshUser,

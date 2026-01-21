@@ -97,8 +97,14 @@ class Scenario(Base):
     status = Column(String, default="draft")
 
     # Entry tracking
-    entry_path = Column(String)  # "user_defined", "tamio_suggested"
+    entry_path = Column(String)  # "user_defined", "tamio_suggested", "alert_derived"
     suggested_reason = Column(String)  # If Tamio-suggested, why?
+
+    # Alert linkage - ties scenarios to detection alerts
+    # When a scenario is suggested based on an active alert, we track that relationship
+    source_alert_id = Column(String, ForeignKey("detection_alerts.id"), nullable=True)
+    # The detection type that triggered this suggestion (e.g., "late_payment", "client_churn")
+    source_detection_type = Column(String, nullable=True)
 
     # Scope definition (JSONB for flexibility)
     # e.g., {"client_ids": [...], "effective_date": "2025-01-01"}
@@ -129,6 +135,7 @@ class Scenario(Base):
     parent_scenario = relationship("Scenario", remote_side=[id], backref="child_scenarios")
     scenario_events = relationship("ScenarioEvent", back_populates="scenario", cascade="all, delete-orphan")
     rule_evaluations = relationship("RuleEvaluation", back_populates="scenario", cascade="all, delete-orphan")
+    source_alert = relationship("DetectionAlert", backref="suggested_scenarios", foreign_keys=[source_alert_id])
 
 
 class ScenarioEvent(Base):

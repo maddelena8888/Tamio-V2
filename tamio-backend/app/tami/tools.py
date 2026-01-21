@@ -18,7 +18,7 @@ from app.scenarios.rule_engine import (
     generate_decision_signals,
     suggest_scenarios as suggest_scenarios_engine,
 )
-from app.forecast.engine import calculate_13_week_forecast
+from app.forecast.engine_v2 import calculate_forecast_v2 as calculate_13_week_forecast
 from app.scenarios.pipeline.dependencies import get_suggested_scenarios as get_dependent_suggestions
 from app.scenarios.pipeline.types import ScenarioTypeEnum
 from sqlalchemy import select

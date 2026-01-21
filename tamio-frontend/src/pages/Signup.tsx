@@ -35,8 +35,8 @@ export default function Signup() {
 
     try {
       await signup(email, password);
-      // New users go to onboarding
-      navigate('/onboarding');
+      // New users go to business profile onboarding first
+      navigate('/onboarding/business-profile');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create account');
     } finally {
