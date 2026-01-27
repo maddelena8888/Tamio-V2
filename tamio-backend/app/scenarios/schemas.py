@@ -102,6 +102,31 @@ class ScenarioResponse(BaseModel):
 
 
 # ============================================================================
+# CUSTOM SCENARIO SCHEMAS (For Transaction Toggle Feature)
+# ============================================================================
+
+class CustomScenarioCreate(BaseModel):
+    """Schema for creating a custom scenario from transaction toggles."""
+    user_id: str
+    name: str = "Custom adjustments"
+    excluded_transactions: List[str]  # Transaction IDs to exclude from forecast
+    effective_date: str  # ISO date string
+
+
+class ForecastDeltaItem(BaseModel):
+    """A delta to apply to a specific week in the forecast."""
+    week: int
+    delta: float
+
+
+class CustomScenarioResponse(BaseModel):
+    """Response after creating a custom scenario."""
+    scenario_id: str
+    name: str
+    forecast_delta: List[ForecastDeltaItem]
+
+
+# ============================================================================
 # RULE EVALUATION SCHEMAS
 # ============================================================================
 

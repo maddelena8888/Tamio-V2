@@ -428,6 +428,68 @@ async def get_scenario_forecast(
 
 
 # ============================================================================
+# CUSTOM SCENARIO ROUTES (For Transaction Toggle Feature)
+# ============================================================================
+
+@router.post("/custom")
+async def create_custom_scenario(
+    data: schemas.CustomScenarioCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a custom scenario from transaction toggles.
+
+    This endpoint allows users to create scenarios by excluding specific
+    transactions from the forecast, simulating what-if analyses without
+    those cash flows.
+
+    Args:
+        data: CustomScenarioCreate with user_id, name, excluded_transactions, effective_date
+        db: Database session
+
+    Returns:
+        CustomScenarioResponse with scenario_id and forecast_delta
+    """
+    try:
+        # Create the custom scenario
+        scenario = models.Scenario(
+            user_id=data.user_id,
+            name=data.name or "Custom adjustments",
+            description=f"Custom scenario excluding {len(data.excluded_transactions)} transactions",
+            scenario_type="custom_exclusion",
+            entry_path="toggle_interaction",
+            scope_config={
+                "excluded_transactions": data.excluded_transactions
+            },
+            parameters={
+                "effective_date": data.effective_date,
+                "excluded_count": len(data.excluded_transactions)
+            },
+            status="active"
+        )
+        db.add(scenario)
+        await db.commit()
+        await db.refresh(scenario)
+
+        # Calculate the forecast delta based on excluded transactions
+        # For now, we'll compute a simple delta - in production this would
+        # use the full forecast engine with exclusions
+        forecast_delta = []
+
+        # TODO: Compute actual deltas by re-running forecast with exclusions
+        # For MVP, return empty delta list - frontend will handle display
+
+        return {
+            "scenario_id": scenario.id,
+            "name": scenario.name,
+            "forecast_delta": forecast_delta
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to create custom scenario: {str(e)}")
+
+
+# ============================================================================
 # RULE EVALUATION ROUTES
 # ============================================================================
 

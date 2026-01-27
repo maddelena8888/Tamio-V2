@@ -4,6 +4,8 @@ import MainLayout from '@/layouts/MainLayout';
 
 // V4 Primary Pages
 import Home from '@/pages/Home';
+import AlertHeroHome from '@/pages/AlertHeroHome';
+import AlertImpact from '@/pages/AlertImpact';
 import AlertsActions from '@/pages/AlertsActions';
 import Dashboard from '@/pages/Dashboard';
 import Tami from '@/pages/Tami';
@@ -11,7 +13,12 @@ import Tami from '@/pages/Tami';
 // V3 Pages (retained)
 import ClientsExpenses from '@/pages/ClientsExpenses';
 import Scenarios from '@/pages/Scenarios';
+import ScenarioBuilder from '@/pages/ScenarioBuilder';
 import Settings from '@/pages/Settings';
+
+// V5 Pages
+import Forecast from '@/pages/Forecast';
+import Health from '@/pages/Health';
 
 // Auth & Onboarding
 import Login from '@/pages/Login';
@@ -163,13 +170,23 @@ export const router = createBrowserRouter([
         path: '/',
         element: <MainLayout />,
         children: [
-          // Home (TAMI + Alerts + KPIs) is the primary landing page
-          { index: true, element: <Home /> },
+          // Alert-focused home page (V5)
+          { index: true, element: <AlertHeroHome /> },
+          // Legacy dashboard route (V4)
+          { path: 'dashboard-legacy', element: <Home /> },
+          // Alert Impact visualization route
+          { path: 'alerts/:alertId/impact', element: <AlertImpact /> },
           { path: 'tami', element: <Tami /> },
           { path: 'dashboard', element: <Dashboard /> },
           { path: 'action-monitor', element: <AlertsActions /> },
           { path: 'clients', element: <ClientsExpenses /> },
-          { path: 'scenarios', element: <Scenarios /> },
+          { path: 'scenarios', element: <ScenarioBuilder /> },
+          { path: 'scenarios/legacy', element: <Scenarios /> },
+          { path: 'forecast', element: <Forecast /> },
+          { path: 'health', element: <Health /> },
+          // Placeholder routes for monitor card navigation (redirect to alerts for now)
+          { path: 'obligations', element: <Navigate to="/action-monitor" replace /> },
+          { path: 'receivables', element: <Navigate to="/action-monitor" replace /> },
           { path: 'settings', element: <Settings /> },
         ],
       },

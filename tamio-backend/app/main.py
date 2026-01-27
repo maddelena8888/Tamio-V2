@@ -64,6 +64,9 @@ from app.notifications import routes as notification_routes
 # TAMI AI Assistant
 from app.tami import routes as tami_routes
 
+# Health Metrics Dashboard
+from app.health import routes as health_routes
+
 # Seed routes (demo data)
 from app.seed import routes as seed_routes
 
@@ -109,6 +112,9 @@ app.include_router(seed_routes.router, prefix=f"{settings.API_V1_PREFIX}", tags=
 
 # TAMI AI Assistant
 app.include_router(tami_routes.router, prefix=f"{settings.API_V1_PREFIX}/tami", tags=["TAMI"])
+
+# Health Metrics Dashboard
+app.include_router(health_routes.router, prefix=f"{settings.API_V1_PREFIX}/health", tags=["Health"])
 
 
 @app.get("/")

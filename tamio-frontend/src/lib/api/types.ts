@@ -312,6 +312,79 @@ export interface ForecastResponse {
   confidence?: ForecastConfidence;
 }
 
+// ============================================================================
+// Scenario Bar Types
+// ============================================================================
+
+export type MetricStatus = 'good' | 'warning' | 'critical';
+
+export interface MetricValue {
+  value: string;
+  raw_value: number;
+  unit: string | null;
+  status: MetricStatus;
+  icon: string;
+}
+
+export interface ScenarioBarMetrics {
+  runway: MetricValue;
+  next_payroll: MetricValue;
+  vat_reserve: MetricValue;
+}
+
+export interface ScenarioBarResponse {
+  scenario_active: boolean;
+  scenario_name: string | null;
+  impact_statement: string | null;
+  metrics: ScenarioBarMetrics;
+  time_range: string;
+}
+
+// ============================================================================
+// Transaction Table Types
+// ============================================================================
+
+export type TransactionStatus = 'overdue' | 'due' | 'expected' | 'received' | 'paid';
+
+export interface TransactionItem {
+  id: string;
+  date: string;
+  amount: number;
+  name: string;
+  entity_id: string;
+  entity_type: 'client' | 'expense';
+  status: TransactionStatus;
+  included: boolean;
+}
+
+export interface TransactionsResponse {
+  transactions: TransactionItem[];
+  total_amount: number;
+  time_range: string;
+}
+
+// ============================================================================
+// Custom Scenario Types
+// ============================================================================
+
+export interface CustomScenarioRequest {
+  user_id: string;
+  name?: string;
+  excluded_transactions: string[];
+  effective_date: string;
+}
+
+export interface ForecastDelta {
+  week: number;
+  delta: number;
+}
+
+export interface CustomScenarioResponse {
+  scenario_id: string;
+  name: string;
+  forecast_delta: ForecastDelta[];
+}
+
 // Scenario Types
 export type ScenarioType =
   | 'client_loss'
@@ -574,9 +647,16 @@ export interface ChatResponse {
   tool_calls_made: string[];
 }
 
+export interface PageContext {
+  current_route: string;
+  route_params?: Record<string, string>;
+  page_data?: Record<string, unknown>;
+}
+
 export interface ChatRequest {
   user_id: string;
   message: string;
   conversation_history: ChatMessage[];
   active_scenario_id: string | null;
+  page_context?: PageContext;
 }

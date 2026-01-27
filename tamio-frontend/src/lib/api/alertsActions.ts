@@ -51,6 +51,7 @@ export interface Risk {
   // Impact
   cash_impact: number | null;
   buffer_impact_percent: number | null;
+  impact_statement: string | null; // e.g., "If unpaid, cash drops to $142K in Week 3 — $58K below buffer"
 
   // Driver
   primary_driver: string; // e.g., "RetailCo payment 14d overdue"
@@ -148,6 +149,7 @@ export interface RiskFilters {
   severity?: RiskSeverity | 'all';
   timing?: 'today' | 'this_week' | 'next_two_weeks' | 'all';
   status?: RiskStatus | 'all';
+  category?: 'obligations' | 'receivables';
 }
 
 /**
@@ -175,6 +177,9 @@ export async function getRisks(filters?: RiskFilters): Promise<RisksResponse> {
   }
   if (filters?.status && filters.status !== 'all') {
     params.append('status', filters.status);
+  }
+  if (filters?.category) {
+    params.append('category', filters.category);
   }
 
   const queryString = params.toString();
@@ -421,6 +426,7 @@ export interface AlertData {
   due_horizon_label: string;
   cash_impact: number | null;
   buffer_impact_percent: number | null;
+  impact_statement: string | null; // Quantified risk statement
   primary_driver: string;
   context_bullets: string[];
   status: RiskStatus;
@@ -467,4 +473,31 @@ export interface DecisionQueueSummary {
     count: number;
     total_upcoming: number;
   };
+}
+
+// ============================================================================
+// Home Page Alert Functions
+// ============================================================================
+
+/**
+ * Get the highest priority alert for the home page hero.
+ * Returns the most urgent active risk, or null if none exist.
+ */
+export async function getHighestPriorityAlert(): Promise<Risk | null> {
+  const response = await getRisks({ status: 'active' });
+
+  if (!response.risks.length) return null;
+
+  const severityOrder: Record<RiskSeverity, number> = {
+    urgent: 0,
+    high: 1,
+    normal: 2,
+  };
+
+  return response.risks.sort((a, b) => {
+    const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
+    if (severityDiff !== 0) return severityDiff;
+    // Secondary sort by cash impact (higher first)
+    return (b.cash_impact || 0) - (a.cash_impact || 0);
+  })[0];
 }

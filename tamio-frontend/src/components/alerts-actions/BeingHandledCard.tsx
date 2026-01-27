@@ -8,9 +8,11 @@
  * - Alert title
  * - Active control name + status
  * - View Details button
+ * - Expandable Impact Preview
  */
 
-import { Shield, ChevronRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Shield, ChevronRight, BarChart2, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import type { DecisionItem } from '@/lib/api/alertsActions';
@@ -22,6 +24,7 @@ interface BeingHandledCardProps {
 }
 
 export function BeingHandledCard({ item, onViewDetails }: BeingHandledCardProps) {
+  const navigate = useNavigate();
   const { alert, activeControls } = item;
   const primaryControl = activeControls[0];
 
@@ -86,7 +89,7 @@ export function BeingHandledCard({ item, onViewDetails }: BeingHandledCardProps)
           )}
         </div>
 
-        {/* Right side: Amount + View button */}
+        {/* Right side: Amount + View buttons */}
         <div className="flex flex-col items-end gap-2">
           {alert.cash_impact && (
             <span className="text-sm font-medium text-gray-600">
@@ -94,15 +97,29 @@ export function BeingHandledCard({ item, onViewDetails }: BeingHandledCardProps)
             </span>
           )}
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onViewDetails(item)}
-            className="text-xs text-gray-500 hover:text-gunmetal h-7 px-2"
-          >
-            View Details
-            <ChevronRight className="w-3.5 h-3.5 ml-1" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => navigate(`/alerts/${alert.id}/impact`)}
+              className={cn(
+                'inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-lg transition-colors',
+                'text-tomato bg-tomato/10 hover:bg-tomato/20'
+              )}
+            >
+              <BarChart2 className="w-3 h-3" />
+              Impact
+              <ExternalLink className="w-3 h-3" />
+            </button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onViewDetails(item)}
+              className="text-xs text-gray-500 hover:text-gunmetal h-7 px-2"
+            >
+              Details
+              <ChevronRight className="w-3.5 h-3.5 ml-1" />
+            </Button>
+          </div>
         </div>
       </div>
     </div>

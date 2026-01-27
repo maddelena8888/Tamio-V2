@@ -10,6 +10,7 @@ export { DecisionQueueSection } from './DecisionQueueSection';
 export { DecisionCard } from './DecisionCard';
 export { BeingHandledCard } from './BeingHandledCard';
 export { MonitoringCard } from './MonitoringCard';
+export { ImpactPreview } from './ImpactPreview';
 
 // Existing components (still used)
 export { TammyDrawer } from './TammyDrawer';

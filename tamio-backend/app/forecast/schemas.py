@@ -89,3 +89,80 @@ class ForecastResponseV1(BaseModel):
     forecast_start_date: str
     weeks: List[WeekForecast]
     summary: ForecastSummary
+
+
+# ============================================================================
+# Scenario Bar Schemas
+# ============================================================================
+
+class MetricValue(BaseModel):
+    """A single metric value with status indicator."""
+    value: str  # The display value (e.g., "13", "Safe", "$15k")
+    raw_value: float  # The raw numeric value for calculations
+    unit: Optional[str] = None  # "w" for weeks, "$" for currency, etc.
+    status: str  # "good", "warning", "critical"
+    icon: str  # Icon name or emoji
+
+
+class ScenarioBarMetrics(BaseModel):
+    """Metrics displayed in the scenario bar."""
+    runway: MetricValue  # Weeks until cash falls below buffer
+    next_payroll: MetricValue  # Payroll safety status
+    vat_reserve: MetricValue  # VAT/tax reserve amount
+
+
+class ScenarioBarResponse(BaseModel):
+    """Response for the scenario bar metrics endpoint."""
+    scenario_active: bool
+    scenario_name: Optional[str] = None
+    impact_statement: Optional[str] = None
+    metrics: ScenarioBarMetrics
+    time_range: str  # "13w", "26w", "52w"
+
+
+# ============================================================================
+# Transaction Table Schemas
+# ============================================================================
+
+class TransactionItem(BaseModel):
+    """A single transaction item for inflows/outflows tables."""
+    id: str
+    date: str  # ISO date string
+    amount: float
+    name: str  # Client name or expense/vendor name
+    entity_id: str  # client_id or bucket_id
+    entity_type: str  # "client" or "expense"
+    status: str  # "overdue", "due", "expected", "received", "paid"
+    included: bool  # Whether included in current forecast
+
+
+class TransactionsResponse(BaseModel):
+    """Response for the transactions endpoint."""
+    transactions: List[TransactionItem]
+    total_amount: float
+    time_range: str
+
+
+# ============================================================================
+# Custom Scenario Schemas
+# ============================================================================
+
+class CustomScenarioRequest(BaseModel):
+    """Request to create a custom scenario from transaction toggles."""
+    user_id: str
+    name: str = "Custom adjustments"
+    excluded_transactions: List[str]  # Transaction IDs to exclude
+    effective_date: str
+
+
+class ForecastDelta(BaseModel):
+    """Delta to apply to a specific week in the forecast."""
+    week: int
+    delta: float
+
+
+class CustomScenarioResponse(BaseModel):
+    """Response after creating a custom scenario."""
+    scenario_id: str
+    name: str
+    forecast_delta: List[ForecastDelta]

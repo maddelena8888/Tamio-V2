@@ -309,6 +309,18 @@
     background: var(--gradient-coral-lime);
   }
 
+  /* Alert hero card - glassomorphic with tomato tint */
+  .alert-hero-glass {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 79, 63, 0.08) 0%,
+      rgba(255, 255, 255, 0.6) 100%
+    );
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 79, 63, 0.15);
+  }
+
   /* Neumorphic shadow utilities */
   .shadow-neuro-light {
     box-shadow: var(--shadow-neuro-light);

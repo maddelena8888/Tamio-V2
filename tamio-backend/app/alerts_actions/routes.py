@@ -7,6 +7,7 @@ Transforms DetectionAlerts into Risks and PreparedActions into Controls.
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
+import math
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +44,28 @@ from .schemas import (
 )
 
 router = APIRouter(prefix="/alerts-actions", tags=["alerts-actions"])
+
+
+# ============================================================================
+# Category Mappings
+# ============================================================================
+
+# Maps category names to their associated detection types
+CATEGORY_DETECTION_TYPES = {
+    "receivables": [
+        "late_payment",
+        "unexpected_revenue",
+        "client_churn",
+        "revenue_variance",
+    ],
+    "obligations": [
+        "payment_timing_conflict",
+        "vendor_terms_expiring",
+        "statutory_deadline",
+        "buffer_breach",
+        "payroll_safety",
+    ],
+}
 
 
 # ============================================================================
@@ -233,6 +256,173 @@ async def _compute_buffer_impact(
     return round((abs(cash_impact) / buffer_amount) * 100, 1)
 
 
+def _format_compact_amount(amount: float) -> str:
+    """Format amount in compact form (e.g., $53K, $1.2M).
+
+    Uses round-half-up (like JavaScript) for consistency with frontend.
+    """
+    abs_amount = abs(amount)
+    if abs_amount >= 1_000_000:
+        return f"${abs_amount / 1_000_000:.1f}M".replace(".0M", "M")
+    elif abs_amount >= 1_000:
+        # Use floor(x + 0.5) for round-half-up behavior (like JavaScript)
+        return f"${math.floor(abs_amount / 1_000 + 0.5)}K"
+    else:
+        return f"${math.floor(abs_amount + 0.5):,}"
+
+
+def _get_business_consequence(
+    context: dict,
+    projected_cash: float,
+    buffer_amount: float,
+    shortfall: float,
+    detection_type: str,
+) -> Optional[str]:
+    """
+    Determine the business consequence of an alert's impact.
+
+    Returns a "which means XYZ" clause explaining the business impact.
+    """
+    # Check for payroll-related consequences
+    payroll_amount = context.get("payroll_amount") or context.get("upcoming_payroll")
+    if payroll_amount and projected_cash < payroll_amount:
+        return "putting payroll at risk"
+
+    # Check if this affects upcoming obligations
+    obligation_amount = context.get("obligation_amount") or context.get("upcoming_obligation")
+    obligation_category = context.get("obligation_category", "").lower()
+
+    if obligation_amount and projected_cash < obligation_amount:
+        if "tax" in obligation_category:
+            return "risking tax payment deadlines and potential penalties"
+        elif "payroll" in obligation_category:
+            return "putting payroll at risk"
+        else:
+            return f"putting upcoming {obligation_category} payments at risk"
+
+    # Calculate runway impact if monthly burn is available
+    monthly_burn = context.get("monthly_burn")
+    if monthly_burn and monthly_burn > 0:
+        current_runway_weeks = (projected_cash + shortfall) / (monthly_burn / 4.33)
+        new_runway_weeks = projected_cash / (monthly_burn / 4.33)
+        weeks_lost = current_runway_weeks - new_runway_weeks
+
+        if new_runway_weeks < 4:
+            return f"leaving only {new_runway_weeks:.0f} weeks of runway"
+        elif weeks_lost >= 2:
+            return f"reducing your runway by {weeks_lost:.0f} weeks"
+
+    # Check severity of buffer breach
+    buffer_breach_percent = (shortfall / buffer_amount * 100) if buffer_amount > 0 else 0
+
+    if buffer_breach_percent >= 75:
+        return "leaving minimal safety margin for unexpected expenses"
+    elif buffer_breach_percent >= 50:
+        return "significantly reducing your ability to handle unexpected costs"
+    elif buffer_breach_percent >= 25:
+        return "limiting flexibility for cash flow fluctuations"
+
+    # Detection-type specific consequences
+    if detection_type in ["payment_overdue", "late_payment", "receivable_risk"]:
+        if shortfall > 0:
+            return "which may require deferring other payments"
+        return "reducing your cash buffer"
+
+    elif detection_type in ["expense_spike", "obligation_breach"]:
+        return "requiring review of discretionary spending"
+
+    elif detection_type in ["cash_shortfall", "buffer_breach", "negative_balance"]:
+        return "requiring immediate cash management action"
+
+    # Default consequence based on shortfall size
+    if shortfall > buffer_amount * 0.5:
+        return "requiring immediate attention"
+
+    return None
+
+
+def _generate_impact_statement(
+    alert: DetectionAlert,
+    current_cash: float,
+    buffer_amount: float,
+) -> Optional[str]:
+    """
+    Generate a quantified impact statement for a risk with business consequences.
+
+    Examples:
+    - "If unpaid, cash drops to $142K in Week 3 — $58K below buffer, putting payroll at risk"
+    - "Missing this payment reduces buffer by 45% ($52K), reducing your runway by 3 weeks"
+    - "Delays payroll coverage — creates $30K shortfall by Feb 14, requiring immediate cash management action"
+    """
+    cash_impact = alert.cash_impact
+    if not cash_impact:
+        return None
+
+    context = alert.context_data or {}
+    detection_type = alert.detection_type or ""
+
+    # Calculate projected position after impact
+    projected_cash = current_cash - abs(cash_impact)
+    shortfall = max(0, buffer_amount - projected_cash)
+
+    # Get week info from context
+    week_number = context.get("week_number") or context.get("impact_week")
+
+    # Get business consequence
+    consequence = _get_business_consequence(
+        context=context,
+        projected_cash=projected_cash,
+        buffer_amount=buffer_amount,
+        shortfall=shortfall,
+        detection_type=detection_type,
+    )
+
+    # Helper to append consequence
+    def with_consequence(statement: str) -> str:
+        if consequence:
+            return f"{statement}, {consequence}"
+        return statement
+
+    # Generate statement based on detection type
+    if detection_type in ["payment_overdue", "late_payment", "receivable_risk"]:
+        if projected_cash < buffer_amount:
+            if week_number:
+                base = f"If unpaid, cash drops to {_format_compact_amount(projected_cash)} in Week {week_number} — {_format_compact_amount(shortfall)} below buffer"
+            else:
+                base = f"If unpaid, cash drops to {_format_compact_amount(projected_cash)} — {_format_compact_amount(shortfall)} below buffer"
+            return with_consequence(base)
+        else:
+            buffer_impact_pct = round((abs(cash_impact) / buffer_amount) * 100)
+            base = f"Missing this payment reduces buffer by {buffer_impact_pct}% ({_format_compact_amount(abs(cash_impact))})"
+            return with_consequence(base)
+
+    elif detection_type in ["cash_shortfall", "buffer_breach", "negative_balance"]:
+        if week_number:
+            base = f"Cash position drops to {_format_compact_amount(projected_cash)} in Week {week_number} — {_format_compact_amount(shortfall)} below safe threshold"
+        else:
+            base = f"Cash position drops to {_format_compact_amount(projected_cash)} — {_format_compact_amount(shortfall)} below safe threshold"
+        return with_consequence(base)
+
+    elif detection_type in ["payroll_risk", "payroll_shortfall"]:
+        if week_number:
+            base = f"Payroll at risk — creates {_format_compact_amount(shortfall)} shortfall by Week {week_number}"
+        else:
+            base = f"Payroll coverage at risk — {_format_compact_amount(abs(cash_impact))} shortfall projected"
+        return with_consequence(base)
+
+    elif detection_type in ["expense_spike", "obligation_breach"]:
+        base = f"Creates {_format_compact_amount(shortfall)} funding gap — buffer drops to {_format_compact_amount(projected_cash)}"
+        return with_consequence(base)
+
+    # Generic fallback with numbers
+    if projected_cash < buffer_amount:
+        base = f"Impact: cash drops to {_format_compact_amount(projected_cash)} — {_format_compact_amount(shortfall)} below buffer"
+        return with_consequence(base)
+    else:
+        base = f"Impact: {_format_compact_amount(abs(cash_impact))} reduction in available cash"
+        return with_consequence(base)
+
+
 def _generate_why_explanation(action: PreparedAction) -> str:
     """Generate explanation for why a control exists."""
     # Use problem_context if available (this is the action description)
@@ -382,8 +572,26 @@ async def _alert_to_risk(db: AsyncSession, alert: DetectionAlert) -> RiskRespons
     # Get linked control IDs
     linked_control_ids = [a.id for a in (alert.prepared_actions or [])]
 
-    # Compute buffer impact
-    buffer_impact = await _compute_buffer_impact(db, alert.user_id, alert.cash_impact)
+    # Get current cash position
+    result = await db.execute(
+        select(func.sum(CashAccount.balance))
+        .where(CashAccount.user_id == alert.user_id)
+    )
+    current_cash = float(result.scalar() or 0)
+
+    # Get buffer threshold from user config
+    config = await get_or_create_config(db, alert.user_id)
+    buffer_amount = float(config.obligations_buffer_amount or 0)
+    if buffer_amount <= 0:
+        buffer_amount = current_cash * 0.2  # Default to 20% of current cash
+
+    # Compute buffer impact percentage
+    buffer_impact = None
+    if alert.cash_impact and buffer_amount > 0:
+        buffer_impact = round((abs(alert.cash_impact) / buffer_amount) * 100, 1)
+
+    # Generate quantified impact statement
+    impact_statement = _generate_impact_statement(alert, current_cash, buffer_amount)
 
     return RiskResponse(
         id=alert.id,
@@ -395,6 +603,7 @@ async def _alert_to_risk(db: AsyncSession, alert: DetectionAlert) -> RiskRespons
         due_horizon_label=_compute_due_horizon_label(alert.deadline),
         cash_impact=alert.cash_impact,
         buffer_impact_percent=buffer_impact,
+        impact_statement=impact_statement,
         primary_driver=_extract_primary_driver(alert.context_data or {}),
         detection_type=alert.detection_type,
         context_bullets=_extract_context_bullets(alert.context_data or {}),
@@ -450,6 +659,7 @@ async def get_risks(
     severity: Optional[str] = Query(None, description="Filter by severity: urgent, high, normal"),
     timing: Optional[str] = Query(None, description="Filter by timing: today, this_week, next_two_weeks"),
     status: Optional[str] = Query(None, description="Filter by status: active, acknowledged, etc."),
+    category: Optional[str] = Query(None, description="Filter by category: obligations, receivables"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -473,6 +683,11 @@ async def get_risks(
         }
         backend_severity = severity_map.get(severity, severity)
         query = query.where(DetectionAlert.severity == backend_severity)
+
+    # Apply category filter
+    if category and category in CATEGORY_DETECTION_TYPES:
+        detection_types = CATEGORY_DETECTION_TYPES[category]
+        query = query.where(DetectionAlert.detection_type.in_(detection_types))
 
     # Apply status filter (default to active)
     if status:

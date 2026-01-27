@@ -89,6 +89,7 @@ class RiskResponse(BaseModel):
     # Impact
     cash_impact: Optional[float] = None
     buffer_impact_percent: Optional[float] = None
+    impact_statement: Optional[str] = None  # e.g., "If unpaid, cash drops to $142K in Week 3 — $58K below buffer"
 
     # Driver
     primary_driver: str  # e.g., "RetailCo payment 14d overdue"

@@ -14,7 +14,6 @@
  */
 
 import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
@@ -44,7 +43,6 @@ import { dismissRisk, approveControl } from '@/lib/api/alertsActions';
 // ============================================================================
 
 function AlertsActionsContent() {
-  const navigate = useNavigate();
   const {
     isLoading,
     error,
@@ -130,67 +128,6 @@ function AlertsActionsContent() {
     [getRiskById, openTammyWithRisk]
   );
 
-  // Handle run scenario - navigate to scenarios page with pre-filled context
-  const handleRunScenario = useCallback(
-    (item: DecisionItem) => {
-      // Get the full Risk object which has context_data and detection_type
-      const risk = getRiskById(item.alert.id);
-      if (!risk) {
-        // Fallback: navigate to scenarios without pre-fill
-        navigate('/scenarios');
-        return;
-      }
-
-      const context = risk.context_data || {};
-
-      // Map detection types to scenario types
-      const detectionToScenarioType: Record<string, string> = {
-        'late_payment': 'payment_delay_in',
-        'overdue_invoice': 'payment_delay_in',
-        'client_concentration': 'client_loss',
-        'client_churn_risk': 'client_loss',
-        'payroll_safety': 'hiring',
-        'buffer_breach': 'decreased_expense',
-        'runway_warning': 'decreased_expense',
-        'unexpected_expense': 'increased_expense',
-        'expense_spike': 'increased_expense',
-      };
-
-      // Build query parameters
-      const params = new URLSearchParams();
-
-      // Set scenario type based on detection type
-      const scenarioType = detectionToScenarioType[risk.detection_type];
-      if (scenarioType) {
-        params.set('type', scenarioType);
-      }
-
-      // Pre-fill client if available
-      if (context.client_id) {
-        params.set('client', context.client_id as string);
-      }
-
-      // Pre-fill amount if available
-      if (context.amount || context.invoice_amount || context.shortfall) {
-        const amount = context.amount || context.invoice_amount || context.shortfall;
-        params.set('amount', String(amount));
-      }
-
-      // Pre-fill delay days for payment delays
-      if (context.days_overdue) {
-        params.set('delay', String(context.days_overdue));
-      }
-
-      // Add alert context for TAMI to reference
-      params.set('from_alert', risk.id);
-      params.set('alert_title', risk.title);
-
-      // Navigate to scenarios page with parameters
-      navigate(`/scenarios?${params.toString()}`);
-    },
-    [navigate, getRiskById]
-  );
-
   // Get linked controls/risks for modals
   const getLinkedControlsForRisk = (risk: Risk): Control[] => {
     return (riskControlMap.get(risk.id) || [])
@@ -223,7 +160,7 @@ function AlertsActionsContent() {
 
   return (
     <div className="min-h-screen">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Page Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gunmetal">Alerts & Actions</h1>
@@ -259,7 +196,6 @@ function AlertsActionsContent() {
                 onModify={handleModify}
                 onDismiss={handleDismissRisk}
                 onChatWithTami={handleChatWithTami}
-                onRunScenario={handleRunScenario}
               />
             ))}
           </DecisionQueueSection>

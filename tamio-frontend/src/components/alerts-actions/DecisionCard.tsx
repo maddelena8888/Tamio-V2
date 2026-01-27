@@ -13,11 +13,11 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Clock,
   Loader2,
   MessageCircle,
-  TrendingUp,
   User,
   Receipt,
   Mail,
@@ -29,10 +29,11 @@ import {
   Users,
   DollarSign,
   ArrowDownRight,
-  Wallet,
   X,
   Plus,
-  Check
+  Check,
+  BarChart2,
+  ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { DecisionItem } from '@/lib/api/alertsActions';
@@ -45,7 +46,6 @@ interface DecisionCardProps {
   onModify: (item: DecisionItem) => void;
   onDismiss: (riskId: string) => Promise<void>;
   onChatWithTami?: (item: DecisionItem) => void;
-  onRunScenario?: (item: DecisionItem) => void;
 }
 
 // Type for context_data which varies by detection type
@@ -381,12 +381,13 @@ export function DecisionCard({
   onModify: _onModify,
   onDismiss,
   onChatWithTami,
-  onRunScenario,
 }: DecisionCardProps) {
   // Suppress unused variable warnings - these props are kept for API compatibility
   void _onApprove;
   void _onModify;
+  const navigate = useNavigate();
   const [isDismissing, setIsDismissing] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [customActionInput, setCustomActionInput] = useState('');
   const [customActions, setCustomActions] = useState<CustomAction[]>([]);
@@ -425,7 +426,7 @@ export function DecisionCard({
     }
   };
 
-  const { alert, recommendation } = item;
+  const { alert } = item;
   const severityStyles = getSeverityStyles(alert.severity);
   const linkedEntity = getLinkedEntity(item);
   const suggestedActions = getSuggestedActions(item);
@@ -438,8 +439,13 @@ export function DecisionCard({
     normal: 'bg-lime/5',
   }[alert.severity];
 
-  const handleDismiss = async () => {
+  const handleDismissClick = () => {
+    setShowDeleteConfirm(true);
+  };
+
+  const handleConfirmDismiss = async () => {
     setIsDismissing(true);
+    setShowDeleteConfirm(false);
     try {
       await onDismiss(alert.id);
     } finally {
@@ -447,258 +453,270 @@ export function DecisionCard({
     }
   };
 
-  // Format impact text with more context
-  const context = (alert as { context_data?: ContextData }).context_data || {};
-  const impactText = alert.buffer_impact_percent
-    ? `${alert.buffer_impact_percent}% of buffer at risk${alert.cash_impact ? ` (${formatAmount(alert.cash_impact)} shortfall)` : ''}`
-    : alert.cash_impact
-      ? `${formatAmount(Math.abs(alert.cash_impact))} ${alert.cash_impact < 0 ? 'impact' : 'at stake'}`
-      : null;
-
-  // Get additional context for display
-  const daysOverdue = context.days_overdue as number;
-  const avgDelayDays = context.avg_delay_days as number;
-  const paymentBehavior = context.payment_behavior as string;
+  const handleCancelDismiss = () => {
+    setShowDeleteConfirm(false);
+  };
 
   return (
-    <div
-      className={cn(
-        'relative rounded-xl',
-        'backdrop-blur-sm',
-        'border border-white/50',
-        'shadow-lg shadow-black/5',
-        severityBgClass
-      )}
-    >
-      <div className="p-4 sm:p-5">
-        {/* Header with Title and Dismiss Button */}
-        <div className="flex items-start justify-between gap-3 mb-2">
-          <h3 className="text-base font-bold text-gunmetal leading-snug">
-            {alert.title}
-          </h3>
-          <button
-            onClick={handleDismiss}
-            disabled={isDismissing}
-            className="flex-shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
-            title="Dismiss Alert"
-          >
-            {isDismissing ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <X className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-
-        {/* Insight - contextual explanation */}
-        <p className="text-sm text-gray-600 leading-relaxed mb-3">
-          {insightText}
-        </p>
-
-        {/* Impact & Context - secondary info */}
-        <div className="text-sm text-gray-500 mb-3 space-y-1">
-          {impactText && (
-            <p className="flex items-center gap-1.5">
-              <Wallet className="w-3.5 h-3.5 text-gray-400" />
-              {impactText}
-            </p>
-          )}
-          {alert.primary_driver && (
-            <p className="flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 text-gray-400" />
-              {alert.primary_driver}
-            </p>
-          )}
-          {/* Show payment pattern insight for late payments */}
-          {daysOverdue && avgDelayDays && (
-            <p className="text-xs text-gray-400 italic">
-              {daysOverdue > avgDelayDays
-                ? `${daysOverdue - avgDelayDays} days beyond their typical ${avgDelayDays}-day delay`
-                : paymentBehavior === 'delayed'
-                  ? `Within their usual ${avgDelayDays}-day payment pattern`
-                  : null
-              }
-            </p>
-          )}
-        </div>
-
-        {/* Tags row: Linked entity + Urgency + Due date */}
-        <div className="flex items-center gap-2 flex-wrap mb-4">
-          {/* Linked entity pill */}
-          {linkedEntity.type && linkedEntity.name && (
-            <span className={cn(
-              'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium',
-              getEntityColors(linkedEntity.type)
-            )}>
-              <EntityIcon type={linkedEntity.type} />
-              {linkedEntity.name}
-            </span>
-          )}
-
-          {/* Urgency tag */}
-          <span
-            className={cn(
-              'px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide',
-              severityStyles.bgClass,
-              severityStyles.textClass
-            )}
-          >
-            {alert.severity}
-          </span>
-
-          {/* Due date tag */}
-          {alert.due_horizon_label && alert.due_horizon_label !== 'No deadline' && (
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
-              <Clock className="w-3 h-3" />
-              {alert.due_horizon_label}
-            </span>
-          )}
-        </div>
-
-        {/* Suggested Actions Section */}
-        {suggestedActions.length > 0 && (
-          <div className="bg-white/60 rounded-lg p-4 mb-4 border border-gray-100">
-            <h4 className="text-sm font-semibold text-gunmetal mb-3">
-              Recommended Actions
-            </h4>
-
-            {/* Action items */}
-            <div className="space-y-2 mb-3">
-              {suggestedActions.map((action, index) => (
-                <div
-                  key={index}
-                  className={cn(
-                    'flex items-center gap-3 p-2.5 rounded-lg',
-                    action.primary
-                      ? 'bg-blue-50/80 border border-blue-100'
-                      : 'bg-gray-50 border border-gray-100'
-                  )}
-                >
-                  <div className={cn(
-                    'w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0',
-                    action.primary
-                      ? 'bg-blue-100 text-blue-600'
-                      : 'bg-gray-200 text-gray-500'
-                  )}>
-                    <ActionIcon type={action.icon} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className={cn(
-                      'text-sm font-medium',
-                      action.primary ? 'text-blue-900' : 'text-gunmetal'
-                    )}>
-                      {action.label}
-                      {action.primary && (
-                        <span className="ml-2 text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-600 rounded uppercase font-semibold">
-                          Recommended
-                        </span>
-                      )}
-                    </p>
-                    {action.description && (
-                      <p className="text-xs text-gray-500 truncate">{action.description}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
-
-              {/* Custom actions added by user */}
-              {customActions.map((action) => (
-                <div
-                  key={action.id}
-                  className="flex items-center gap-3 p-2.5 rounded-lg bg-emerald-50/80 border border-emerald-100"
-                >
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-emerald-100 text-emerald-600">
-                    <Check className="w-4 h-4" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-emerald-900">
-                      {action.label}
-                      <span className="ml-2 text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-600 rounded uppercase font-semibold">
-                        Custom
-                      </span>
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => handleRemoveCustomAction(action.id)}
-                    className="p-1 rounded text-emerald-400 hover:text-emerald-600 hover:bg-emerald-100 transition-colors"
-                    title="Remove action"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-
-              {/* Inline add custom action form */}
-              {showAddForm && (
-                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-50 border border-gray-200">
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-gray-200 text-gray-500">
-                    <Plus className="w-4 h-4" />
-                  </div>
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={customActionInput}
-                    onChange={(e) => setCustomActionInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Describe your action..."
-                    className="flex-1 text-sm bg-transparent border-none outline-none placeholder:text-gray-400"
-                  />
-                  <button
-                    onClick={handleAddCustomAction}
-                    disabled={!customActionInput.trim()}
-                    className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Add action"
-                  >
-                    <Check className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowAddForm(false);
-                      setCustomActionInput('');
-                    }}
-                    className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-                    title="Cancel"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
+    <>
+      <div
+        className={cn(
+          'relative rounded-xl',
+          'backdrop-blur-sm',
+          'border border-white/50',
+          'shadow-lg shadow-black/5',
+          severityBgClass
+        )}
+      >
+        <div className="p-4 sm:p-5">
+          {/* Header with Title, Pills, and Dismiss Button */}
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <h3 className="text-base font-bold text-gunmetal leading-snug flex-1">
+              {alert.title}
+            </h3>
+            {/* Pills and dismiss button in top right */}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {/* Linked entity pill */}
+              {linkedEntity.type && linkedEntity.name && (
+                <span className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium',
+                  getEntityColors(linkedEntity.type)
+                )}>
+                  <EntityIcon type={linkedEntity.type} />
+                  {linkedEntity.name}
+                </span>
               )}
-            </div>
-
-            {/* Alternative options */}
-            <div className="flex items-center gap-2 pt-3 border-t border-gray-200 flex-wrap">
-              {!showAddForm && (
-                <button
-                  onClick={() => setShowAddForm(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add custom action
-                </button>
+              {/* Urgency tag */}
+              <span
+                className={cn(
+                  'px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wide',
+                  severityStyles.bgClass,
+                  severityStyles.textClass
+                )}
+              >
+                {alert.severity}
+              </span>
+              {/* Due date tag */}
+              {alert.due_horizon_label && alert.due_horizon_label !== 'No deadline' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                  <Clock className="w-3 h-3" />
+                  {alert.due_horizon_label}
+                </span>
               )}
-              {onChatWithTami && (
-                <button
-                  onClick={() => onChatWithTami(item)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
-                >
-                  <MessageCircle className="w-3.5 h-3.5" />
-                  Chat with TAMI
-                </button>
-              )}
-              {onRunScenario && (
-                <button
-                  onClick={() => onRunScenario(item)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
-                >
-                  <TrendingUp className="w-3.5 h-3.5" />
-                  Run Scenario
-                </button>
-              )}
+              {/* Dismiss button */}
+              <button
+                onClick={handleDismissClick}
+                disabled={isDismissing}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+                title="Delete Alert"
+              >
+                {isDismissing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <X className="w-4 h-4" />
+                )}
+              </button>
             </div>
           </div>
-        )}
 
+          {/* Impact statement - quantified risk (if available) */}
+          {alert.impact_statement && (
+            <p className="text-sm font-medium text-tomato/90 mb-2">
+              {alert.impact_statement}
+            </p>
+          )}
+
+          {/* Insight - contextual explanation */}
+          <p className="text-sm text-gray-600 leading-relaxed mb-4">
+            {insightText}
+          </p>
+
+          {/* Prominent action buttons - View Impact and Chat with TAMI */}
+          <div className="flex items-center gap-3 mb-4">
+            <button
+              onClick={() => navigate(`/alerts/${alert.id}/impact`)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg transition-colors bg-tomato text-white hover:bg-tomato/90 shadow-sm"
+            >
+              <BarChart2 className="w-4 h-4" />
+              View Impact
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+            {onChatWithTami && (
+              <button
+                onClick={() => onChatWithTami(item)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg transition-colors bg-mimi-pink text-gunmetal hover:bg-mimi-pink/80 shadow-sm"
+              >
+                <MessageCircle className="w-4 h-4" />
+                Chat with TAMI
+              </button>
+            )}
+          </div>
+
+          {/* Suggested Actions Section */}
+          {suggestedActions.length > 0 && (
+            <div className="bg-white/60 rounded-lg p-4 border border-gray-100">
+              <h4 className="text-sm font-semibold text-gunmetal mb-3">
+                Recommended Actions
+              </h4>
+
+              {/* Action items */}
+              <div className="space-y-2">
+                {suggestedActions.map((action, index) => (
+                  <div
+                    key={index}
+                    className={cn(
+                      'flex items-center gap-3 p-2.5 rounded-lg',
+                      action.primary
+                        ? 'bg-blue-50/80 border border-blue-100'
+                        : 'bg-gray-50 border border-gray-100'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0',
+                      action.primary
+                        ? 'bg-blue-100 text-blue-600'
+                        : 'bg-gray-200 text-gray-500'
+                    )}>
+                      <ActionIcon type={action.icon} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={cn(
+                        'text-sm font-medium',
+                        action.primary ? 'text-blue-900' : 'text-gunmetal'
+                      )}>
+                        {action.label}
+                        {action.primary && (
+                          <span className="ml-2 text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-600 rounded uppercase font-semibold">
+                            Recommended
+                          </span>
+                        )}
+                      </p>
+                      {action.description && (
+                        <p className="text-xs text-gray-500 truncate">{action.description}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Custom actions added by user */}
+                {customActions.map((action) => (
+                  <div
+                    key={action.id}
+                    className="flex items-center gap-3 p-2.5 rounded-lg bg-emerald-50/80 border border-emerald-100"
+                  >
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-emerald-100 text-emerald-600">
+                      <Check className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-emerald-900">
+                        {action.label}
+                        <span className="ml-2 text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-600 rounded uppercase font-semibold">
+                          Custom
+                        </span>
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveCustomAction(action.id)}
+                      className="p-1 rounded text-emerald-400 hover:text-emerald-600 hover:bg-emerald-100 transition-colors"
+                      title="Remove action"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+
+                {/* Inline add custom action form */}
+                {showAddForm && (
+                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-gray-50 border border-gray-200">
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-gray-200 text-gray-500">
+                      <Plus className="w-4 h-4" />
+                    </div>
+                    <input
+                      ref={inputRef}
+                      type="text"
+                      value={customActionInput}
+                      onChange={(e) => setCustomActionInput(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Describe your action..."
+                      className="flex-1 text-sm bg-transparent border-none outline-none placeholder:text-gray-400"
+                    />
+                    <button
+                      onClick={handleAddCustomAction}
+                      disabled={!customActionInput.trim()}
+                      className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Add action"
+                    >
+                      <Check className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowAddForm(false);
+                        setCustomActionInput('');
+                      }}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                      title="Cancel"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Add custom action button */}
+              {!showAddForm && (
+                <div className="pt-3 mt-3 border-t border-gray-200">
+                  <button
+                    onClick={() => setShowAddForm(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add custom action
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={handleCancelDismiss}
+          />
+          {/* Modal */}
+          <div className="relative bg-white rounded-xl shadow-xl p-6 max-w-sm mx-4 z-10">
+            <h3 className="text-lg font-semibold text-gunmetal mb-2">
+              Delete Alert?
+            </h3>
+            <p className="text-sm text-gray-600 mb-6">
+              Are you sure you want to delete this alert? This action cannot be undone.
+            </p>
+            <div className="flex items-center gap-3 justify-end">
+              <button
+                onClick={handleCancelDismiss}
+                className="px-4 py-2 text-sm font-medium text-gunmetal bg-mint-cream hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDismiss}
+                disabled={isDismissing}
+                className="px-4 py-2 text-sm font-medium text-white bg-tomato hover:bg-tomato/90 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {isDismissing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  'Delete'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

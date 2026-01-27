@@ -64,6 +64,7 @@ function riskToAlertData(risk: Risk): AlertData {
     due_horizon_label: risk.due_horizon_label,
     cash_impact: risk.cash_impact,
     buffer_impact_percent: risk.buffer_impact_percent,
+    impact_statement: risk.impact_statement,
     primary_driver: risk.primary_driver,
     context_bullets: risk.context_bullets,
     status: risk.status,

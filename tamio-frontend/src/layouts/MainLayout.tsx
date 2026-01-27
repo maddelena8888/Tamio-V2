@@ -14,26 +14,31 @@ import {
 } from '@/components/ui/sidebar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DemoBanner } from '@/components/DemoBanner';
+import { TAMIProvider } from '@/contexts/TAMIContext';
+import { GlobalTAMIButton } from '@/components/chat/GlobalTAMIButton';
+import { GlobalTAMIDrawer } from '@/components/chat/GlobalTAMIDrawer';
 import {
   Users,
   Settings,
-  TrendingUp,
-  Activity,
   Bot,
+  Layers,
+  LineChart,
+  Activity,
 } from 'lucide-react';
 
 // Navigation items - Home (TAMI + Alerts + KPIs) is primary
 const navItems = [
-  { title: 'Home', url: '/', icon: Bot },
-  { title: 'Forecast & Scenarios', url: '/scenarios', icon: TrendingUp },
-  { title: 'Alerts & Actions', url: '/action-monitor', icon: Activity },
-  { title: 'Ledger', url: '/clients', icon: Users },
+  { title: 'Health', url: '/health', icon: Activity },
+  { title: 'Alerts', url: '/action-monitor', icon: Bot },
+  { title: 'Scenarios', url: '/scenarios', icon: Layers },
+  { title: 'Forecast', url: '/forecast', icon: LineChart },
 ];
 
 export default function MainLayout() {
   const location = useLocation();
 
   return (
+    <TAMIProvider>
     <SidebarProvider>
       <Sidebar
         className="border-r-0"
@@ -85,6 +90,23 @@ export default function MainLayout() {
                 <TooltipTrigger asChild>
                   <SidebarMenuButton
                     asChild
+                    isActive={location.pathname === '/clients'}
+                    className="h-12"
+                  >
+                    <Link to="/clients">
+                      <Users className="h-5 w-5" />
+                      <span>Ledger</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </TooltipTrigger>
+                <TooltipContent side="right">Ledger</TooltipContent>
+              </Tooltip>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <SidebarMenuButton
+                    asChild
                     isActive={location.pathname === '/settings'}
                     className="h-12"
                   >
@@ -111,6 +133,11 @@ export default function MainLayout() {
           <Outlet />
         </main>
       </SidebarInset>
+
+      {/* Global TAMI Chat */}
+      <GlobalTAMIButton />
+      <GlobalTAMIDrawer />
     </SidebarProvider>
+    </TAMIProvider>
   );
 }

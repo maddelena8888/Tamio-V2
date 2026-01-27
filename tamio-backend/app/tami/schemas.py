@@ -46,6 +46,13 @@ class ChatMessage(BaseModel):
     timestamp: Optional[datetime] = Field(None, description="When message was sent")
 
 
+class PageContext(BaseModel):
+    """Frontend page context for more relevant responses."""
+    current_route: str = Field(..., description="Current page route path")
+    route_params: Optional[Dict[str, str]] = Field(None, description="URL route parameters")
+    page_data: Optional[Dict[str, Any]] = Field(None, description="Page-specific context data")
+
+
 class ChatRequest(BaseModel):
     """Request to chat with TAMI."""
     user_id: str = Field(..., description="User ID for context loading")
@@ -57,6 +64,10 @@ class ChatRequest(BaseModel):
     active_scenario_id: Optional[str] = Field(
         None,
         description="Currently active scenario being edited"
+    )
+    page_context: Optional[PageContext] = Field(
+        None,
+        description="Frontend page context for context-aware responses"
     )
 
 
