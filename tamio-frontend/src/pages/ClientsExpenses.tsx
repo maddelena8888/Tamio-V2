@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { NeuroCard, NeuroCardContent, NeuroCardHeader, NeuroCardTitle } from '@/components/ui/neuro-card';
@@ -23,11 +23,24 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Plus, ArrowUpDown, Trash2, ExternalLink, CheckCircle, Pencil } from 'lucide-react';
+import { Plus, ArrowUpDown, Trash2, ExternalLink, CheckCircle, Pencil, Sparkles, AlertTriangle } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
+import { toast } from 'sonner';
 import { getClients, createClient, updateClient, deleteClient } from '@/lib/api/data';
 import { getExpenses, createExpense, updateExpense, deleteExpense } from '@/lib/api/data';
 import { getForecast } from '@/lib/api/forecast';
+import {
+  getReconciliationSuggestions,
+  getForecastImpact,
+  getQueueSummary,
+  approveReconciliation,
+  rejectReconciliation,
+} from '@/lib/api/reconciliation';
+import {
+  ForecastConfidenceBadge,
+  ReconciliationSuggestionCard,
+  ReconciliationTransactionTable,
+} from '@/components/reconciliation';
 import type {
   Client,
   ExpenseBucket,
@@ -42,6 +55,9 @@ import type {
   Currency,
   ForecastResponse,
   ForecastEventSummary,
+  ReconciliationSuggestion,
+  ForecastImpactSummary,
+  ReconciliationQueueSummary,
 } from '@/lib/api/types';
 
 interface Milestone {
@@ -51,6 +67,454 @@ interface Milestone {
   trigger_type: 'date_based' | 'delivery_based';
 }
 
+// Mock transaction data for demonstration
+// Using 'as any' to bypass strict typing for demo purposes
+const MOCK_TRANSACTIONS = [
+  {
+    id: 'txn-001',
+    user_id: 'demo-user',
+    obligation_id: 'obl-001',
+    schedule_id: 'sched-001',
+    payment_date: '2026-01-28',
+    amount: '15000.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'Acme Corp',
+    reference: 'INV-2024-0142',
+    source: 'bank_feed' as const,
+    status: 'completed' as const,
+    account_id: null,
+    payment_method: 'bank_transfer',
+    notes: null,
+    is_reconciled: true,
+    reconciled_at: '2026-01-28T14:30:00Z',
+    created_at: '2026-01-28T14:00:00Z',
+    updated_at: '2026-01-28T14:30:00Z',
+    reconciliation_status: 'reconciled' as const,
+    ai_category: 'client_payment',
+    ai_confidence: 0.98,
+    matched_obligation_name: 'Acme Corp Monthly Retainer',
+    matched_schedule: {
+      id: 'sched-001',
+      obligation_id: 'obl-001',
+      due_date: '2026-01-25',
+      period_start: '2026-01-01',
+      period_end: '2026-01-31',
+      estimated_amount: '15000.00',
+      estimate_source: 'historical',
+      confidence: 'high' as const,
+      status: 'paid' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-28T14:30:00Z',
+    },
+  },
+  {
+    id: 'txn-002',
+    user_id: 'demo-user',
+    obligation_id: 'obl-002',
+    schedule_id: 'sched-002',
+    payment_date: '2026-01-27',
+    amount: '4250.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'AWS',
+    reference: 'AWS-JAN-2026',
+    source: 'xero_sync' as const,
+    status: 'completed' as const,
+    account_id: null,
+    payment_method: 'credit_card',
+    notes: null,
+    is_reconciled: true,
+    reconciled_at: '2026-01-27T09:15:00Z',
+    created_at: '2026-01-27T09:00:00Z',
+    updated_at: '2026-01-27T09:15:00Z',
+    reconciliation_status: 'reconciled' as const,
+    ai_category: 'infrastructure',
+    ai_confidence: 0.96,
+    matched_obligation_name: 'AWS Cloud Services',
+    matched_schedule: {
+      id: 'sched-002',
+      obligation_id: 'obl-002',
+      due_date: '2026-01-27',
+      period_start: '2026-01-01',
+      period_end: '2026-01-31',
+      estimated_amount: '4000.00',
+      estimate_source: 'historical',
+      confidence: 'medium' as const,
+      status: 'paid' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-27T09:15:00Z',
+    },
+  },
+  {
+    id: 'txn-003',
+    user_id: 'demo-user',
+    obligation_id: 'obl-003',
+    schedule_id: 'sched-003',
+    payment_date: '2026-01-26',
+    amount: '8500.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'TechStart Inc',
+    reference: 'PROJ-M2-FINAL',
+    source: 'bank_feed' as const,
+    status: 'pending' as const,
+    account_id: null,
+    payment_method: 'bank_transfer',
+    notes: null,
+    is_reconciled: false,
+    reconciled_at: null,
+    created_at: '2026-01-26T10:00:00Z',
+    updated_at: null,
+    reconciliation_status: 'ai_suggested' as const,
+    ai_category: 'client_payment',
+    ai_confidence: 0.87,
+    matched_obligation_name: 'TechStart Website Redesign - Milestone 2',
+    matched_schedule: {
+      id: 'sched-003',
+      obligation_id: 'obl-003',
+      due_date: '2026-01-30',
+      period_start: null,
+      period_end: null,
+      estimated_amount: '8000.00',
+      estimate_source: 'contract',
+      confidence: 'high' as const,
+      status: 'pending' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: null,
+    },
+  },
+  {
+    id: 'txn-004',
+    user_id: 'demo-user',
+    obligation_id: 'obl-004',
+    schedule_id: 'sched-004',
+    payment_date: '2026-01-25',
+    amount: '1850.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'Google Workspace',
+    reference: 'GOOG-SUB-JAN',
+    source: 'xero_sync' as const,
+    status: 'completed' as const,
+    account_id: null,
+    payment_method: 'credit_card',
+    notes: null,
+    is_reconciled: true,
+    reconciled_at: '2026-01-25T16:00:00Z',
+    created_at: '2026-01-25T15:30:00Z',
+    updated_at: '2026-01-25T16:00:00Z',
+    reconciliation_status: 'reconciled' as const,
+    ai_category: 'software',
+    ai_confidence: 0.99,
+    matched_obligation_name: 'Google Workspace Subscription',
+    matched_schedule: {
+      id: 'sched-004',
+      obligation_id: 'obl-004',
+      due_date: '2026-01-25',
+      period_start: '2026-01-01',
+      period_end: '2026-01-31',
+      estimated_amount: '1850.00',
+      estimate_source: 'fixed',
+      confidence: 'high' as const,
+      status: 'paid' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-25T16:00:00Z',
+    },
+  },
+  {
+    id: 'txn-005',
+    user_id: 'demo-user',
+    obligation_id: 'obl-005',
+    schedule_id: 'sched-005',
+    payment_date: '2026-01-24',
+    amount: '22000.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'GlobalRetail Co',
+    reference: 'GR-Q1-ADV',
+    source: 'bank_feed' as const,
+    status: 'pending' as const,
+    account_id: null,
+    payment_method: 'bank_transfer',
+    notes: null,
+    is_reconciled: false,
+    reconciled_at: null,
+    created_at: '2026-01-24T11:00:00Z',
+    updated_at: null,
+    reconciliation_status: 'ai_suggested' as const,
+    ai_category: 'client_payment',
+    ai_confidence: 0.74,
+    matched_obligation_name: 'GlobalRetail Q1 Strategy Consulting',
+    matched_schedule: {
+      id: 'sched-005',
+      obligation_id: 'obl-005',
+      due_date: '2026-01-20',
+      period_start: '2026-01-01',
+      period_end: '2026-03-31',
+      estimated_amount: '25000.00',
+      estimate_source: 'contract',
+      confidence: 'medium' as const,
+      status: 'pending' as const,
+      notes: 'Q1 advance payment - amount may vary',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: null,
+    },
+  },
+  {
+    id: 'txn-006',
+    user_id: 'demo-user',
+    obligation_id: 'obl-006',
+    schedule_id: 'sched-006',
+    payment_date: '2026-01-23',
+    amount: '3200.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'WeWork',
+    reference: 'WW-OFFICE-JAN',
+    source: 'xero_sync' as const,
+    status: 'completed' as const,
+    account_id: null,
+    payment_method: 'bank_transfer',
+    notes: null,
+    is_reconciled: true,
+    reconciled_at: '2026-01-23T11:30:00Z',
+    created_at: '2026-01-23T11:00:00Z',
+    updated_at: '2026-01-23T11:30:00Z',
+    reconciliation_status: 'reconciled' as const,
+    ai_category: 'office',
+    ai_confidence: 0.95,
+    matched_obligation_name: 'WeWork Office Space',
+    matched_schedule: {
+      id: 'sched-006',
+      obligation_id: 'obl-006',
+      due_date: '2026-01-23',
+      period_start: '2026-01-01',
+      period_end: '2026-01-31',
+      estimated_amount: '3200.00',
+      estimate_source: 'fixed',
+      confidence: 'high' as const,
+      status: 'paid' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-23T11:30:00Z',
+    },
+  },
+  {
+    id: 'txn-007',
+    user_id: 'demo-user',
+    obligation_id: null,
+    schedule_id: null,
+    payment_date: '2026-01-22',
+    amount: '950.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'Unknown Vendor',
+    reference: 'TRANS-8847221',
+    source: 'bank_feed' as const,
+    status: 'pending' as const,
+    account_id: null,
+    payment_method: null,
+    notes: null,
+    is_reconciled: false,
+    reconciled_at: null,
+    created_at: '2026-01-22T14:00:00Z',
+    updated_at: null,
+    reconciliation_status: 'pending' as const,
+    ai_category: undefined,
+    ai_confidence: 0.32,
+    matched_obligation_name: undefined,
+    matched_schedule: undefined,
+  },
+  {
+    id: 'txn-008',
+    user_id: 'demo-user',
+    obligation_id: 'obl-008',
+    schedule_id: 'sched-008',
+    payment_date: '2026-01-21',
+    amount: '12500.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'Zenith Media',
+    reference: 'ZM-RETAINER-JAN',
+    source: 'bank_feed' as const,
+    status: 'pending' as const,
+    account_id: null,
+    payment_method: 'bank_transfer',
+    notes: null,
+    is_reconciled: false,
+    reconciled_at: null,
+    created_at: '2026-01-21T09:00:00Z',
+    updated_at: null,
+    reconciliation_status: 'ai_suggested' as const,
+    ai_category: 'client_payment',
+    ai_confidence: 0.92,
+    matched_obligation_name: 'Zenith Media Monthly Retainer',
+    matched_schedule: {
+      id: 'sched-008',
+      obligation_id: 'obl-008',
+      due_date: '2026-01-20',
+      period_start: '2026-01-01',
+      period_end: '2026-01-31',
+      estimated_amount: '12500.00',
+      estimate_source: 'historical',
+      confidence: 'high' as const,
+      status: 'pending' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: null,
+    },
+  },
+  {
+    id: 'txn-009',
+    user_id: 'demo-user',
+    obligation_id: 'obl-009',
+    schedule_id: 'sched-009',
+    payment_date: '2026-01-20',
+    amount: '675.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'Slack',
+    reference: 'SLACK-TEAM-JAN',
+    source: 'xero_sync' as const,
+    status: 'completed' as const,
+    account_id: null,
+    payment_method: 'credit_card',
+    notes: null,
+    is_reconciled: true,
+    reconciled_at: '2026-01-20T08:45:00Z',
+    created_at: '2026-01-20T08:30:00Z',
+    updated_at: '2026-01-20T08:45:00Z',
+    reconciliation_status: 'reconciled' as const,
+    ai_category: 'software',
+    ai_confidence: 0.97,
+    matched_obligation_name: 'Slack Team Plan',
+    matched_schedule: {
+      id: 'sched-009',
+      obligation_id: 'obl-009',
+      due_date: '2026-01-20',
+      period_start: '2026-01-01',
+      period_end: '2026-01-31',
+      estimated_amount: '675.00',
+      estimate_source: 'fixed',
+      confidence: 'high' as const,
+      status: 'paid' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-20T08:45:00Z',
+    },
+  },
+  {
+    id: 'txn-010',
+    user_id: 'demo-user',
+    obligation_id: 'obl-010',
+    schedule_id: 'sched-010',
+    payment_date: '2026-01-19',
+    amount: '5400.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'Contractor Services LLC',
+    reference: 'CS-INV-0089',
+    source: 'bank_feed' as const,
+    status: 'pending' as const,
+    account_id: null,
+    payment_method: 'bank_transfer',
+    notes: null,
+    is_reconciled: false,
+    reconciled_at: null,
+    created_at: '2026-01-19T16:00:00Z',
+    updated_at: null,
+    reconciliation_status: 'pending' as const,
+    ai_category: 'contractor',
+    ai_confidence: 0.58,
+    matched_obligation_name: 'Senior Developer Contractor',
+    matched_schedule: {
+      id: 'sched-010',
+      obligation_id: 'obl-010',
+      due_date: '2026-01-15',
+      period_start: '2026-01-01',
+      period_end: '2026-01-15',
+      estimated_amount: '5000.00',
+      estimate_source: 'contract',
+      confidence: 'medium' as const,
+      status: 'pending' as const,
+      notes: 'Bi-weekly contractor payment - hours may vary',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: null,
+    },
+  },
+  {
+    id: 'txn-011',
+    user_id: 'demo-user',
+    obligation_id: 'obl-011',
+    schedule_id: 'sched-011',
+    payment_date: '2026-01-18',
+    amount: '18750.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'BlueSky Ventures',
+    reference: 'BSV-PROJ-PHASE1',
+    source: 'bank_feed' as const,
+    status: 'completed' as const,
+    account_id: null,
+    payment_method: 'bank_transfer',
+    notes: null,
+    is_reconciled: true,
+    reconciled_at: '2026-01-18T13:00:00Z',
+    created_at: '2026-01-18T12:30:00Z',
+    updated_at: '2026-01-18T13:00:00Z',
+    reconciliation_status: 'reconciled' as const,
+    ai_category: 'client_payment',
+    ai_confidence: 0.94,
+    matched_obligation_name: 'BlueSky App Development - Phase 1',
+    matched_schedule: {
+      id: 'sched-011',
+      obligation_id: 'obl-011',
+      due_date: '2026-01-18',
+      period_start: null,
+      period_end: null,
+      estimated_amount: '18750.00',
+      estimate_source: 'contract',
+      confidence: 'high' as const,
+      status: 'paid' as const,
+      notes: 'Phase 1 milestone payment',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-18T13:00:00Z',
+    },
+  },
+  {
+    id: 'txn-012',
+    user_id: 'demo-user',
+    obligation_id: 'obl-012',
+    schedule_id: 'sched-012',
+    payment_date: '2026-01-17',
+    amount: '2100.00',
+    currency: 'USD' as Currency,
+    vendor_name: 'Figma Inc',
+    reference: 'FIG-ORG-JAN',
+    source: 'xero_sync' as const,
+    status: 'completed' as const,
+    account_id: null,
+    payment_method: 'credit_card',
+    notes: null,
+    is_reconciled: true,
+    reconciled_at: '2026-01-17T10:20:00Z',
+    created_at: '2026-01-17T10:00:00Z',
+    updated_at: '2026-01-17T10:20:00Z',
+    reconciliation_status: 'reconciled' as const,
+    ai_category: 'software',
+    ai_confidence: 0.98,
+    matched_obligation_name: 'Figma Organization Plan',
+    matched_schedule: {
+      id: 'sched-012',
+      obligation_id: 'obl-012',
+      due_date: '2026-01-17',
+      period_start: '2026-01-01',
+      period_end: '2026-01-31',
+      estimated_amount: '2100.00',
+      estimate_source: 'fixed',
+      confidence: 'high' as const,
+      status: 'paid' as const,
+      notes: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-17T10:20:00Z',
+    },
+  },
+];
+
 export default function ClientsExpenses() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -58,7 +522,7 @@ export default function ClientsExpenses() {
   const [expenses, setExpenses] = useState<ExpenseBucket[]>([]);
   const [forecast, setForecast] = useState<ForecastResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'clients');
+  const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'transactions');
   const [highlightedId, setHighlightedId] = useState<string | null>(searchParams.get('highlight'));
 
   // Client form state
@@ -122,6 +586,12 @@ export default function ClientsExpenses() {
   type ExpenseSortOption = 'amount' | 'due_date' | 'priority' | 'bucket_type';
   const [expenseSort, setExpenseSort] = useState<ExpenseSortOption>('amount');
 
+  // Reconciliation state
+  const [reconciliationSuggestions, setReconciliationSuggestions] = useState<ReconciliationSuggestion[]>([]);
+  const [forecastImpact, setForecastImpact] = useState<ForecastImpactSummary | null>(null);
+  const [queueSummary, setQueueSummary] = useState<ReconciliationQueueSummary | null>(null);
+  const [isReconciliationLoading, setIsReconciliationLoading] = useState(false);
+
   useEffect(() => {
     if (!user) return;
 
@@ -144,6 +614,31 @@ export default function ClientsExpenses() {
 
     fetchData();
   }, [user]);
+
+  // Fetch reconciliation data when queue tab is active
+  useEffect(() => {
+    if (!user || (activeTab !== 'reconciliation' && activeTab !== 'transactions')) return;
+
+    const fetchReconciliationData = async () => {
+      setIsReconciliationLoading(true);
+      try {
+        const [suggestionsData, impactData, summaryData] = await Promise.all([
+          getReconciliationSuggestions(false).catch(() => ({ suggestions: [], total_count: 0, auto_approved_count: 0, pending_review_count: 0, unmatched_count: 0 })),
+          getForecastImpact().catch(() => null),
+          getQueueSummary().catch(() => null),
+        ]);
+        setReconciliationSuggestions(suggestionsData.suggestions);
+        setForecastImpact(impactData);
+        setQueueSummary(summaryData);
+      } catch (error) {
+        console.error('Failed to fetch reconciliation data:', error);
+      } finally {
+        setIsReconciliationLoading(false);
+      }
+    };
+
+    fetchReconciliationData();
+  }, [user, activeTab]);
 
   // Handle URL params for highlighting
   useEffect(() => {
@@ -435,6 +930,64 @@ export default function ClientsExpenses() {
     }
   };
 
+  // Reconciliation handlers
+  const handleApproveReconciliation = useCallback(async (suggestion: ReconciliationSuggestion) => {
+    try {
+      await approveReconciliation({
+        suggestion_id: suggestion.id,
+        payment_id: suggestion.payment_id,
+        schedule_id: suggestion.suggested_schedule_id,
+      });
+      // Remove from suggestions list
+      setReconciliationSuggestions((prev) =>
+        prev.filter((s) => s.id !== suggestion.id)
+      );
+      // Update queue summary
+      if (queueSummary) {
+        setQueueSummary({
+          ...queueSummary,
+          total_pending: queueSummary.total_pending - 1,
+          ai_suggestions: queueSummary.ai_suggestions - 1,
+        });
+      }
+      toast.success('Match approved', {
+        description: `${suggestion.payment.vendor_name || 'Transaction'} matched to ${suggestion.suggested_obligation.vendor_name || suggestion.suggested_obligation.category}`,
+      });
+    } catch (error) {
+      console.error('Failed to approve reconciliation:', error);
+      toast.error('Failed to approve match');
+    }
+  }, [queueSummary]);
+
+  const handleRejectReconciliation = useCallback(async (suggestion: ReconciliationSuggestion) => {
+    try {
+      await rejectReconciliation({
+        payment_id: suggestion.payment_id,
+      });
+      // Remove from suggestions list
+      setReconciliationSuggestions((prev) =>
+        prev.filter((s) => s.id !== suggestion.id)
+      );
+      // Update queue summary
+      if (queueSummary) {
+        setQueueSummary({
+          ...queueSummary,
+          total_pending: queueSummary.total_pending - 1,
+          ai_suggestions: Math.max(0, queueSummary.ai_suggestions - 1),
+        });
+      }
+      toast.success('Suggestion rejected');
+    } catch (error) {
+      console.error('Failed to reject reconciliation:', error);
+      toast.error('Failed to reject suggestion');
+    }
+  }, [queueSummary]);
+
+  const handleEditReconciliation = useCallback((_suggestion: ReconciliationSuggestion) => {
+    // TODO: Open edit modal to reassign to different obligation
+    toast.info('Edit functionality coming soon');
+  }, []);
+
   const formatCurrency = (value: string | number) => {
     const num = typeof value === 'string' ? parseFloat(value) : value;
     return new Intl.NumberFormat('en-US', {
@@ -560,11 +1113,39 @@ export default function ClientsExpenses() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Ledger</h1>
+        {/* Forecast Accuracy Badge */}
+        {forecastImpact && (
+          <ForecastConfidenceBadge
+            score={forecastImpact.accuracy_score}
+            unreconciledCount={forecastImpact.unreconciled_count}
+            size="md"
+          />
+        )}
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="flex items-center justify-between">
           <TabsList className="glass-strong !h-11 !p-1 !rounded-xl gap-1 w-fit shadow-lg shadow-black/5 !bg-white/85">
+            <TabsTrigger
+              value="transactions"
+              className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
+            >
+              Transactions
+            </TabsTrigger>
+            <TabsTrigger
+              value="reconciliation"
+              className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0 relative"
+            >
+              <span className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4" />
+                Reconciliation
+                {queueSummary && queueSummary.total_pending > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-mimi-pink text-[10px] font-bold text-white">
+                    {queueSummary.total_pending > 9 ? '9+' : queueSummary.total_pending}
+                  </span>
+                )}
+              </span>
+            </TabsTrigger>
             <TabsTrigger
               value="clients"
               className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
@@ -576,18 +1157,6 @@ export default function ClientsExpenses() {
               className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
             >
               Expenses
-            </TabsTrigger>
-            <TabsTrigger
-              value="transactions"
-              className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
-            >
-              Transactions
-            </TabsTrigger>
-            <TabsTrigger
-              value="projections"
-              className="!rounded-lg !px-5 !py-1.5 !h-auto text-sm font-semibold text-gunmetal/60 transition-all duration-300 data-[state=active]:!bg-white data-[state=active]:text-gunmetal data-[state=active]:shadow-md data-[state=active]:shadow-black/5 hover:text-gunmetal/80 !border-0"
-            >
-              Projections
             </TabsTrigger>
           </TabsList>
 
@@ -1141,114 +1710,188 @@ export default function ClientsExpenses() {
           </NeuroCard>
         </TabsContent>
 
-        {/* Transactions Tab - Past Data */}
+        {/* Transactions Tab - Past Data with AI Reconciliation */}
         <TabsContent value="transactions" className="space-y-4">
-          <NeuroCard>
-            <NeuroCardHeader>
-              <NeuroCardTitle>Past Transactions</NeuroCardTitle>
-            </NeuroCardHeader>
-            <NeuroCardContent>
-              {!forecast ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  No transaction data available. Connect your accounting software to import past transactions.
+          {/* Summary Stats */}
+          <div className="grid grid-cols-4 gap-4">
+            <div className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm p-4">
+              <p className="text-2xl font-bold text-gunmetal">{MOCK_TRANSACTIONS.length}</p>
+              <p className="text-xs text-gray-500">Total Transactions</p>
+            </div>
+            <div className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm p-4">
+              <p className="text-2xl font-bold text-lime-dark">
+                {MOCK_TRANSACTIONS.filter((t) => t.reconciliation_status === 'reconciled').length}
+              </p>
+              <p className="text-xs text-gray-500">Reconciled</p>
+            </div>
+            <div className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm p-4">
+              <p className="text-2xl font-bold text-mimi-pink">
+                {MOCK_TRANSACTIONS.filter((t) => t.reconciliation_status === 'ai_suggested').length}
+              </p>
+              <p className="text-xs text-gray-500">AI Suggestions</p>
+            </div>
+            <div className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm p-4">
+              <p className="text-2xl font-bold text-amber-600">
+                {MOCK_TRANSACTIONS.filter((t) => t.reconciliation_status === 'pending').length}
+              </p>
+              <p className="text-xs text-gray-500">Needs Review</p>
+            </div>
+          </div>
+
+          {/* Transaction Table */}
+          <ReconciliationTransactionTable
+            transactions={MOCK_TRANSACTIONS as any}
+            isLoading={isReconciliationLoading}
+            onApprove={async (payment) => {
+              toast.success('Match approved', {
+                description: `${payment.vendor_name} matched to ${payment.matched_obligation_name}`,
+              });
+            }}
+            onReject={async (payment) => {
+              toast.success('Match rejected', {
+                description: `${payment.vendor_name} will need manual matching`,
+              });
+            }}
+            onEdit={(_payment) => {
+              toast.info('Edit match', {
+                description: 'Manual match editing coming soon',
+              });
+            }}
+            onViewDetails={(payment) => {
+              toast.info('Transaction details', {
+                description: `Viewing ${payment.vendor_name} - ${payment.reference}`,
+              });
+            }}
+          />
+        </TabsContent>
+
+        {/* Reconciliation Queue Tab */}
+        <TabsContent value="reconciliation" className="space-y-6">
+          {/* Queue Summary Bar */}
+          {queueSummary && (
+            <div className="rounded-xl border border-white/50 bg-white/40 backdrop-blur-sm p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-6">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-gunmetal">{queueSummary.total_pending}</p>
+                    <p className="text-xs text-gray-500">Pending Review</p>
+                  </div>
+                  <Separator orientation="vertical" className="h-10" />
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-mimi-pink">{queueSummary.ai_suggestions}</p>
+                    <p className="text-xs text-gray-500">AI Suggestions</p>
+                  </div>
+                  <Separator orientation="vertical" className="h-10" />
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-amber-600">{queueSummary.needs_manual_match}</p>
+                    <p className="text-xs text-gray-500">Need Manual Match</p>
+                  </div>
+                  <Separator orientation="vertical" className="h-10" />
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-lime-dark">{queueSummary.recently_auto_approved}</p>
+                    <p className="text-xs text-gray-500">Auto-Approved (24h)</p>
+                  </div>
                 </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b">
-                        <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Date</th>
-                        <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Description</th>
-                        <th className="text-left py-3 px-4 font-semibold text-sm text-muted-foreground">Category</th>
-                        <th className="text-right py-3 px-4 font-semibold text-sm text-muted-foreground">Amount</th>
-                        <th className="text-center py-3 px-4 font-semibold text-sm text-muted-foreground">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {/* Filter for past transactions (before today) */}
-                      {forecast.weeks
-                        .flatMap((week) => week.events)
-                        .filter((event) => new Date(event.date) < new Date())
-                        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                        .map((event: ForecastEventSummary) => {
-                          // Find matching client or expense
-                          const matchingClient = event.direction === 'in'
-                            ? clients.find((c) => c.name === event.source_name || c.id === event.source_id)
-                            : null;
-                          const matchingExpense = event.direction === 'out'
-                            ? expenses.find((e) => e.name === event.source_name || e.id === event.source_id || e.category === event.category)
-                            : null;
+                {queueSummary.affecting_forecast > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-tomato/10 text-tomato">
+                    <AlertTriangle className="h-4 w-4" />
+                    <span className="text-sm font-medium">
+                      {queueSummary.affecting_forecast} item{queueSummary.affecting_forecast !== 1 ? 's' : ''} affecting forecast accuracy
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
-                          const handleClick = () => {
-                            if (matchingClient) {
-                              handleOpenClientDialog(matchingClient, true);
-                            } else if (matchingExpense) {
-                              handleOpenExpenseDialog(matchingExpense, true);
-                            }
-                          };
-
-                          const isClickable = matchingClient || matchingExpense;
-
-                          return (
-                            <tr
-                              key={event.id}
-                              className={`border-b border-muted/50 hover:bg-muted/30 transition-colors ${isClickable ? 'cursor-pointer' : ''}`}
-                              onClick={isClickable ? handleClick : undefined}
-                            >
-                              <td className="py-3 px-4 text-sm">
-                                {new Date(event.date).toLocaleDateString('en-US', {
-                                  month: 'short',
-                                  day: 'numeric',
-                                  year: 'numeric',
-                                })}
-                              </td>
-                              <td className="py-3 px-4">
-                                <div className="flex items-center gap-2">
-                                  <span
-                                    className={`w-2 h-2 rounded-full ${
-                                      event.direction === 'in' ? 'bg-lime-500' : 'bg-tomato'
-                                    }`}
-                                  />
-                                  <span className={`text-sm font-medium ${isClickable ? 'text-blue-600 hover:underline' : ''}`}>
-                                    {event.source_name || event.event_type}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="py-3 px-4">
-                                <Badge variant="outline" className="text-xs capitalize">
-                                  {event.category || event.event_type}
-                                </Badge>
-                              </td>
-                              <td
-                                className={`py-3 px-4 text-sm font-medium text-right ${
-                                  event.direction === 'in' ? 'text-lime-600' : 'text-tomato'
-                                }`}
-                              >
-                                {event.direction === 'in' ? '+' : '-'}
-                                {formatCurrency(event.amount)}
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <Badge
-                                  variant="outline"
-                                  className="text-xs border-lime-500 text-lime-600 bg-lime-50"
-                                >
-                                  Completed
-                                </Badge>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                    </tbody>
-                  </table>
-                  {forecast.weeks.flatMap((w) => w.events).filter((e) => new Date(e.date) < new Date()).length === 0 && (
-                    <div className="text-center py-8 text-muted-foreground">
-                      No past transactions found.
-                    </div>
-                  )}
+          {isReconciliationLoading ? (
+            <div className="space-y-4">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-48 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : reconciliationSuggestions.length === 0 ? (
+            <NeuroCard>
+              <NeuroCardContent className="py-12">
+                <div className="text-center">
+                  <Sparkles className="h-12 w-12 mx-auto text-lime-dark mb-4" />
+                  <h3 className="text-lg font-semibold text-gunmetal mb-2">
+                    All caught up!
+                  </h3>
+                  <p className="text-sm text-gray-500 max-w-md mx-auto">
+                    All transactions have been reconciled. New items will appear here when
+                    they need your review.
+                  </p>
+                </div>
+              </NeuroCardContent>
+            </NeuroCard>
+          ) : (
+            <>
+              {/* AI Suggestions Section */}
+              {reconciliationSuggestions.filter(s => s.confidence >= 0.70).length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-5 w-5 text-mimi-pink" />
+                    <h2 className="text-lg font-semibold text-gunmetal">
+                      AI Suggestions
+                    </h2>
+                    <Badge variant="outline" className="ml-2">
+                      {reconciliationSuggestions.filter(s => s.confidence >= 0.70).length} items
+                    </Badge>
+                  </div>
+                  <p className="text-sm text-gray-500">
+                    These transactions have been matched by AI with 70%+ confidence. Review and approve or reject.
+                  </p>
+                  <div className="grid gap-4">
+                    {reconciliationSuggestions
+                      .filter(s => s.confidence >= 0.70)
+                      .sort((a, b) => b.confidence - a.confidence)
+                      .map((suggestion) => (
+                        <ReconciliationSuggestionCard
+                          key={suggestion.id}
+                          suggestion={suggestion}
+                          onApprove={handleApproveReconciliation}
+                          onEdit={handleEditReconciliation}
+                          onReject={handleRejectReconciliation}
+                        />
+                      ))}
+                  </div>
                 </div>
               )}
-            </NeuroCardContent>
-          </NeuroCard>
+
+              {/* Needs Manual Match Section */}
+              {reconciliationSuggestions.filter(s => s.confidence < 0.70).length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-5 w-5 text-amber-500" />
+                    <h2 className="text-lg font-semibold text-gunmetal">
+                      Needs Manual Review
+                    </h2>
+                    <Badge variant="outline" className="ml-2 border-amber-500 text-amber-600">
+                      {reconciliationSuggestions.filter(s => s.confidence < 0.70).length} items
+                    </Badge>
+                  </div>
+                  <p className="text-sm text-gray-500">
+                    These transactions have low confidence matches or no matches found. Manual review required.
+                  </p>
+                  <div className="grid gap-4">
+                    {reconciliationSuggestions
+                      .filter(s => s.confidence < 0.70)
+                      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                      .map((suggestion) => (
+                        <ReconciliationSuggestionCard
+                          key={suggestion.id}
+                          suggestion={suggestion}
+                          onApprove={handleApproveReconciliation}
+                          onEdit={handleEditReconciliation}
+                          onReject={handleRejectReconciliation}
+                        />
+                      ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </TabsContent>
 
         {/* Projections Tab - Future Data */}

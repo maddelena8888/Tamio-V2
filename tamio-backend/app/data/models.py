@@ -10,7 +10,6 @@ from app.data.users.models import User
 from app.data.balances.models import CashAccount
 from app.data.clients.models import Client
 from app.data.expenses.models import ExpenseBucket
-from app.data.events.models import CashEvent
 from app.data.obligations.models import ObligationAgreement, ObligationSchedule, PaymentEvent
 
 __all__ = [
@@ -19,7 +18,6 @@ __all__ = [
     "CashAccount",
     "Client",
     "ExpenseBucket",
-    "CashEvent",
     "ObligationAgreement",
     "ObligationSchedule",
     "PaymentEvent",

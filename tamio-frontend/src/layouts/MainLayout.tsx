@@ -15,23 +15,25 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DemoBanner } from '@/components/DemoBanner';
 import { TAMIProvider } from '@/contexts/TAMIContext';
+import { RulesProvider } from '@/contexts/RulesContext';
 import { GlobalTAMIButton } from '@/components/chat/GlobalTAMIButton';
 import { GlobalTAMIDrawer } from '@/components/chat/GlobalTAMIDrawer';
+import { NotificationCentreProvider, NotificationCentre } from '@/components/notification-centre';
+import { NotificationsDropdown } from '@/components/notifications/NotificationsDropdown';
 import {
-  Users,
+  BookOpen,
   Settings,
-  Bot,
-  Layers,
-  LineChart,
   Activity,
+  LayoutDashboard,
+  LineChart,
+  Shield,
 } from 'lucide-react';
 
 // Navigation items - Home (TAMI + Alerts + KPIs) is primary
 const navItems = [
-  { title: 'Health', url: '/health', icon: Activity },
-  { title: 'Alerts', url: '/action-monitor', icon: Bot },
-  { title: 'Scenarios', url: '/scenarios', icon: Layers },
-  { title: 'Forecast', url: '/forecast', icon: LineChart },
+  { title: 'Home', url: '/home', icon: LayoutDashboard },
+  { title: 'Dashboard', url: '/health', icon: Activity },
+  { title: 'Forecast', url: '/forecast-scenarios', icon: LineChart },
 ];
 
 export default function MainLayout() {
@@ -39,7 +41,9 @@ export default function MainLayout() {
 
   return (
     <TAMIProvider>
-    <SidebarProvider>
+    <RulesProvider>
+    <NotificationCentreProvider>
+    <SidebarProvider defaultOpen={false}>
       <Sidebar
         className="border-r-0"
         collapsible="icon"
@@ -90,11 +94,28 @@ export default function MainLayout() {
                 <TooltipTrigger asChild>
                   <SidebarMenuButton
                     asChild
-                    isActive={location.pathname === '/clients'}
+                    isActive={location.pathname === '/rules'}
                     className="h-12"
                   >
-                    <Link to="/clients">
-                      <Users className="h-5 w-5" />
+                    <Link to="/rules">
+                      <Shield className="h-5 w-5" />
+                      <span>Rules</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </TooltipTrigger>
+                <TooltipContent side="right">Rules</TooltipContent>
+              </Tooltip>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location.pathname === '/ledger' || location.pathname.startsWith('/ledger')}
+                    className="h-12"
+                  >
+                    <Link to="/ledger">
+                      <BookOpen className="h-5 w-5" />
                       <span>Ledger</span>
                     </Link>
                   </SidebarMenuButton>
@@ -126,8 +147,10 @@ export default function MainLayout() {
 
       <SidebarInset className="bg-gradient-ambient min-h-screen flex flex-col overflow-x-hidden">
         <DemoBanner />
-        <header className="flex h-14 items-center gap-2 px-4">
+        <header className="flex h-14 items-center gap-2 px-4 mt-2">
           <SidebarTrigger className="-ml-2" />
+          <div className="flex-1" />
+          <NotificationsDropdown />
         </header>
         <main className="flex-1 p-6 overflow-x-hidden overflow-y-auto">
           <Outlet />
@@ -137,7 +160,12 @@ export default function MainLayout() {
       {/* Global TAMI Chat */}
       <GlobalTAMIButton />
       <GlobalTAMIDrawer />
+
+      {/* Notification Centre Modal */}
+      <NotificationCentre />
     </SidebarProvider>
+    </NotificationCentreProvider>
+    </RulesProvider>
     </TAMIProvider>
   );
 }

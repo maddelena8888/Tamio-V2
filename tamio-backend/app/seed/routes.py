@@ -79,7 +79,7 @@ async def seed_status(
         from app.data.clients.models import Client
         from app.data.expenses.models import ExpenseBucket
         from app.data.balances.models import CashAccount
-        from app.data.events.models import CashEvent
+        from app.data.obligations.models import ObligationAgreement, ObligationSchedule
 
         clients_count = await db.execute(
             select(func.count(Client.id)).where(Client.user_id == user.id)
@@ -90,8 +90,13 @@ async def seed_status(
         accounts_count = await db.execute(
             select(func.count(CashAccount.id)).where(CashAccount.user_id == user.id)
         )
-        events_count = await db.execute(
-            select(func.count(CashEvent.id)).where(CashEvent.user_id == user.id)
+        obligations_count = await db.execute(
+            select(func.count(ObligationAgreement.id)).where(ObligationAgreement.user_id == user.id)
+        )
+        schedules_count = await db.execute(
+            select(func.count(ObligationSchedule.id))
+            .join(ObligationAgreement)
+            .where(ObligationAgreement.user_id == user.id)
         )
 
         return {
@@ -104,7 +109,8 @@ async def seed_status(
                 "clients": clients_count.scalar(),
                 "expenses": expenses_count.scalar(),
                 "cash_accounts": accounts_count.scalar(),
-                "cash_events": events_count.scalar(),
+                "obligations": obligations_count.scalar(),
+                "schedules": schedules_count.scalar(),
             }
         }
 
@@ -160,6 +166,8 @@ async def refresh_alerts(
     )
     clients = clients_result.scalars().all()
     retailco_client = next((c for c in clients if "RetailCo" in c.name), None)
+    healthtech_client = next((c for c in clients if "HealthTech" in c.name), None)
+    localbiz_client = next((c for c in clients if "LocalBiz" in c.name), None)
 
     alerts_created = []
 
@@ -174,6 +182,7 @@ async def refresh_alerts(
         description="Design milestone payment of $52,500 from RetailCo Rebrand is now 14 days overdue.",
         cash_impact=-52500.00,
         context_data={
+            "client_id": retailco_client.id if retailco_client else None,
             "client_name": "RetailCo Rebrand",
             "invoice_amount": 52500,
             "days_overdue": 14,
@@ -213,7 +222,7 @@ async def refresh_alerts(
     alert2 = DetectionAlert(
         id=generate_id("alert"),
         user_id=user_id,
-        detection_type="staffing_change",
+        detection_type="headcount_change",  # Use enum value from DetectionType
         severity="this_week",
         status="active",
         title="New Hire Impact: Senior Developer starts Monday",
@@ -258,7 +267,7 @@ async def refresh_alerts(
     alert3 = DetectionAlert(
         id=generate_id("alert"),
         user_id=user_id,
-        detection_type="expense_anomaly",
+        detection_type="unexpected_expense",  # Use enum value from DetectionType
         severity="this_week",
         status="active",
         title="Vendor Rate Increase: Figma renewal +40%",
@@ -350,14 +359,15 @@ async def refresh_alerts(
     alert5 = DetectionAlert(
         id=generate_id("alert"),
         user_id=user_id,
-        detection_type="revenue_risk",
+        detection_type="client_churn",  # Use enum value from DetectionType
         severity="upcoming",
         status="active",
         title="Client Contract Ending: HealthTech Phase 1",
         description="HealthTech Phase 1 contract ends in 3 weeks. No Phase 2 discussions scheduled.",
         cash_impact=-18000.00,
         context_data={
-            "client_name": "HealthTech",
+            "client_id": healthtech_client.id if healthtech_client else None,
+            "client_name": healthtech_client.name if healthtech_client else "HealthTech Campaign",
             "contract_value": 18000,
             "monthly_value": 6000,
         },
@@ -391,9 +401,56 @@ async def refresh_alerts(
     )
     db.add(option5)
 
-    # Alert 6: VAT accumulation (standalone action - not linked to alert)
+    # Alert 6: High Churn Risk - LocalBiz Network
+    if localbiz_client:
+        alert6 = DetectionAlert(
+            id=generate_id("alert"),
+            user_id=user_id,
+            detection_type="client_churn",  # Use enum value from DetectionType
+            severity="this_week",
+            status="active",
+            title="High Churn Risk: LocalBiz Network",
+            description="LocalBiz Network shows high churn risk: declining engagement, payment delays. $25K/month at risk.",
+            cash_impact=-75000.00,
+            context_data={
+                "client_id": localbiz_client.id,
+                "client_name": localbiz_client.name,
+                "monthly_revenue": 25000,
+                "churn_risk": "high",
+            },
+            deadline=datetime.combine(today + timedelta(days=14), datetime.min.time()),
+        )
+        db.add(alert6)
+        alerts_created.append(alert6)
+        await db.flush()
+
+        action6_alert = PreparedAction(
+            id=generate_id("action"),
+            user_id=user_id,
+            alert_id=alert6.id,
+            action_type="invoice_follow_up",
+            status="pending_approval",
+            problem_summary="Proactive outreach to retain LocalBiz Network",
+            problem_context="Client showing churn signals. Check-in call recommended to understand concerns.",
+            deadline=datetime.combine(today + timedelta(days=7), datetime.min.time()),
+        )
+        db.add(action6_alert)
+        await db.flush()
+
+        option6_alert = ActionOption(
+            id=generate_id("opt"),
+            action_id=action6_alert.id,
+            is_recommended=True,
+            risk_level="medium",
+            reasoning=["Client has delayed recent payments", "Proactive check-in may prevent churn"],
+            prepared_content={"email_subject": "Checking in - How can we support you better?"},
+            cash_impact=25000.00,
+        )
+        db.add(option6_alert)
+
+    # VAT accumulation (standalone action - not linked to alert)
     # This is a proactive action, not a response to a risk
-    action6 = PreparedAction(
+    action7 = PreparedAction(
         id=generate_id("action"),
         user_id=user_id,
         alert_id=None,  # No linked alert - this is a proactive recommendation
@@ -403,19 +460,19 @@ async def refresh_alerts(
         problem_context="Move accumulated VAT from last month's client payments to your tax reserve. Prevents accidental spending of funds owed to HMRC.",
         deadline=datetime.combine(today + timedelta(days=3), datetime.min.time()),
     )
-    db.add(action6)
+    db.add(action7)
     await db.flush()
 
-    option6 = ActionOption(
+    option7 = ActionOption(
         id=generate_id("opt"),
-        action_id=action6.id,
+        action_id=action7.id,
         is_recommended=True,
         risk_level="low",
         reasoning=["$92K collected this month", "20% ($18.4K) is VAT that needs to be set aside", "Q1 filing deadline approaching"],
         prepared_content={"transfer_amount": 18400, "from_account": "Operating", "to_account": "Tax Reserve"},
         cash_impact=-18400.00,
     )
-    db.add(option6)
+    db.add(option7)
 
     await db.commit()
 

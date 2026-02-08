@@ -660,3 +660,102 @@ export interface ChatRequest {
   active_scenario_id: string | null;
   page_context?: PageContext;
 }
+
+// ============================================================================
+// Reconciliation Types
+// ============================================================================
+
+export type ReconciliationStatus = 'reconciled' | 'pending' | 'unmatched' | 'ai_suggested';
+export type ForecastImpactSeverity = 'healthy' | 'warning' | 'critical';
+
+export interface ReconciliationSuggestion {
+  id: string;
+  payment_id: string;
+  payment: PaymentEvent;
+  suggested_schedule_id: string;
+  suggested_schedule: ObligationSchedule;
+  suggested_obligation: ObligationAgreement;
+  confidence: number;
+  reasoning: string;
+  variance_amount: string | null;
+  variance_percent: number | null;
+  auto_approved: boolean;
+  created_at: string;
+}
+
+export interface ReconciliationSuggestionList {
+  suggestions: ReconciliationSuggestion[];
+  total_count: number;
+  auto_approved_count: number;
+  pending_review_count: number;
+  unmatched_count: number;
+}
+
+export interface ReconciliationMatch {
+  payment_id: string;
+  schedule_id: string;
+}
+
+export interface ApproveReconciliationRequest {
+  suggestion_id?: string;
+  payment_id: string;
+  schedule_id: string;
+}
+
+export interface BulkReconciliationRequest {
+  matches: ReconciliationMatch[];
+}
+
+export interface BulkReconciliationResult {
+  successful: number;
+  failed: number;
+  errors: string[];
+}
+
+export interface RejectReconciliationRequest {
+  payment_id: string;
+  reason?: string;
+}
+
+export interface RevertReconciliationRequest {
+  payment_id: string;
+  reason?: string;
+}
+
+export interface ForecastImpactItem {
+  payment: PaymentEvent;
+  impact_amount: string;
+  days_old: number;
+}
+
+export interface ForecastImpactSummary {
+  accuracy_score: number;
+  unreconciled_count: number;
+  unreconciled_amount: string;
+  impact_percent: number;
+  top_impacting_items: ForecastImpactItem[];
+  severity: ForecastImpactSeverity;
+}
+
+export interface ReconciliationSettings {
+  auto_approve_enabled: boolean;
+  auto_approve_threshold: number;
+  review_threshold: number;
+  notify_on_auto_approve: boolean;
+}
+
+export interface ReconciliationSettingsUpdate {
+  auto_approve_enabled?: boolean;
+  auto_approve_threshold?: number;
+  review_threshold?: number;
+  notify_on_auto_approve?: boolean;
+}
+
+export interface ReconciliationQueueSummary {
+  total_pending: number;
+  affecting_forecast: number;
+  ai_suggestions: number;
+  needs_manual_match: number;
+  recently_auto_approved: number;
+  forecast_accuracy: number;
+}

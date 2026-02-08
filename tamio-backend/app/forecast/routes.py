@@ -17,18 +17,20 @@ from app.forecast.schemas import (
 )
 from app.data.clients.models import Client
 from app.data.expenses.models import ExpenseBucket
+from app.data.users.models import User
+from app.auth.dependencies import get_current_user
 
 router = APIRouter()
 
 
 @router.get("", response_model=ForecastResponse)
 async def get_forecast(
-    user_id: str = Query(..., description="User ID"),
+    current_user: User = Depends(get_current_user),
     weeks: int = Query(13, description="Number of weeks to forecast", ge=1, le=52),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get cash flow forecast for a user.
+    Get cash flow forecast for the authenticated user.
 
     This endpoint computes the forecast on-the-fly from clients and expenses,
     ensuring it's always aligned with current data. It also includes confidence
@@ -39,7 +41,6 @@ async def get_forecast(
     - LOW confidence: Manual entry, not linked to accounting software
 
     Args:
-        user_id: User ID
         weeks: Number of weeks to forecast (default 13, max 52)
         db: Database session
 
@@ -47,7 +48,7 @@ async def get_forecast(
         Forecast with weekly breakdowns, summary, and confidence metrics
     """
     try:
-        forecast = await calculate_forecast_v2(db, user_id, weeks=weeks)
+        forecast = await calculate_forecast_v2(db, current_user.id, weeks=weeks)
         return forecast
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating forecast: {str(e)}")
@@ -55,24 +56,23 @@ async def get_forecast(
 
 @router.get("/confidence")
 async def get_forecast_confidence(
-    user_id: str = Query(..., description="User ID"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get detailed confidence breakdown for a user's forecast.
+    Get detailed confidence breakdown for the authenticated user's forecast.
 
     Returns the confidence metrics without the full forecast data,
     useful for displaying confidence indicators in the UI.
 
     Args:
-        user_id: User ID
         db: Database session
 
     Returns:
         Confidence breakdown with suggestions for improvement
     """
     try:
-        forecast = await calculate_forecast_v2(db, user_id, weeks=13)
+        forecast = await calculate_forecast_v2(db, current_user.id, weeks=13)
         return {
             "confidence": forecast["confidence"],
             "summary": {
@@ -89,7 +89,7 @@ async def get_forecast_confidence(
 
 @router.get("/scenario-bar", response_model=ScenarioBarResponse)
 async def get_scenario_bar_metrics(
-    user_id: str = Query(..., description="User ID"),
+    current_user: User = Depends(get_current_user),
     scenario_id: Optional[str] = Query(None, description="Optional scenario ID for scenario metrics"),
     time_range: str = Query("13w", description="Time range: 13w, 26w, or 52w"),
     db: AsyncSession = Depends(get_db)
@@ -101,7 +101,6 @@ async def get_scenario_bar_metrics(
     When a scenario_id is provided, returns metrics for that scenario instead of baseline.
 
     Args:
-        user_id: User ID
         scenario_id: Optional scenario ID to get scenario-specific metrics
         time_range: Time range for forecast (13w, 26w, 52w)
         db: Database session
@@ -114,8 +113,8 @@ async def get_scenario_bar_metrics(
         weeks_map = {"13w": 13, "26w": 26, "52w": 52}
         weeks = weeks_map.get(time_range, 13)
 
-        # Get forecast data
-        forecast = await calculate_forecast_v2(db, user_id, weeks=weeks)
+        # Get forecast data using authenticated user's ID
+        forecast = await calculate_forecast_v2(db, current_user.id, weeks=weeks)
 
         # Default buffer calculation (3 months)
         target_months = 3
@@ -136,10 +135,10 @@ async def get_scenario_bar_metrics(
             runway_status = "critical"
             runway_icon = "circle-x"
 
-        # Find next payroll in expense buckets
+        # Find next payroll in expense buckets for authenticated user
         expenses_result = await db.execute(
             select(ExpenseBucket)
-            .where(ExpenseBucket.user_id == user_id)
+            .where(ExpenseBucket.user_id == current_user.id)
             .where(ExpenseBucket.category == "payroll")
         )
         payroll_expenses = expenses_result.scalars().all()
@@ -165,10 +164,10 @@ async def get_scenario_bar_metrics(
             payroll_value = "Critical"
             payroll_icon = "circle-x"
 
-        # Calculate VAT/Tax reserve from expense buckets
+        # Calculate VAT/Tax reserve from expense buckets for authenticated user
         tax_expenses_result = await db.execute(
             select(ExpenseBucket)
-            .where(ExpenseBucket.user_id == user_id)
+            .where(ExpenseBucket.user_id == current_user.id)
             .where(
                 ExpenseBucket.name.ilike("%vat%") |
                 ExpenseBucket.name.ilike("%tax%") |
@@ -235,7 +234,7 @@ async def get_scenario_bar_metrics(
 
 @router.get("/transactions", response_model=TransactionsResponse)
 async def get_forecast_transactions(
-    user_id: str = Query(..., description="User ID"),
+    current_user: User = Depends(get_current_user),
     type: str = Query(..., description="Transaction type: 'inflows' or 'outflows'"),
     time_range: str = Query("13w", description="Time range: 13w, 26w, or 52w"),
     db: AsyncSession = Depends(get_db)
@@ -246,7 +245,6 @@ async def get_forecast_transactions(
     Returns transaction items that can be toggled on/off to create custom scenarios.
 
     Args:
-        user_id: User ID
         type: "inflows" or "outflows"
         time_range: Time range for forecast (13w, 26w, 52w)
         db: Database session
@@ -259,8 +257,8 @@ async def get_forecast_transactions(
         weeks_map = {"13w": 13, "26w": 26, "52w": 52}
         weeks = weeks_map.get(time_range, 13)
 
-        # Get forecast with events
-        forecast = await calculate_forecast_v2(db, user_id, weeks=weeks)
+        # Get forecast with events using authenticated user's ID
+        forecast = await calculate_forecast_v2(db, current_user.id, weeks=weeks)
 
         # Collect all events from all weeks
         transactions: List[TransactionItem] = []

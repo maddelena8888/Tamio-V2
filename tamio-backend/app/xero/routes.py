@@ -14,11 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import logging
 
 from app.database import get_db
 from app.config import settings
 from app.xero import schemas
-from app.xero.models import XeroConnection, XeroSyncLog
+from app.xero.models import XeroConnection, XeroSyncLog, OAuthState
 from app.xero.client import (
     get_authorization_url,
     generate_state,
@@ -28,12 +29,15 @@ from app.xero.client import (
     XeroClient,
 )
 from app.xero.sync import sync_xero_data, analyze_payment_behavior
+from app.auth.dependencies import get_current_user
+from app.data.users.models import User
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-# In-memory state storage (use Redis in production)
-_oauth_states: dict = {}
+# OAuth state expiry time (10 minutes)
+OAUTH_STATE_EXPIRY_MINUTES = 10
 
 
 # ============================================================================
@@ -42,14 +46,14 @@ _oauth_states: dict = {}
 
 @router.get("/status", response_model=schemas.XeroConnectionStatus)
 async def get_xero_status(
-    user_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get the current Xero connection status for a user.
+    Get the current Xero connection status for the authenticated user.
     """
     result = await db.execute(
-        select(XeroConnection).where(XeroConnection.user_id == user_id)
+        select(XeroConnection).where(XeroConnection.user_id == current_user.id)
     )
     connection = result.scalar_one_or_none()
 
@@ -74,7 +78,7 @@ async def get_xero_status(
 
 @router.get("/connect")
 async def connect_xero(
-    user_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -87,12 +91,18 @@ async def connect_xero(
             detail="Xero credentials not configured. Please set XERO_CLIENT_ID and XERO_CLIENT_SECRET."
         )
 
-    # Generate state with user_id embedded
+    # Generate state token
     state = generate_state()
-    _oauth_states[state] = {
-        "user_id": user_id,
-        "created_at": datetime.now(timezone.utc)
-    }
+
+    # Store state in database (replaces in-memory storage - survives restarts)
+    oauth_state = OAuthState(
+        state=state,
+        user_id=current_user.id,
+        provider="xero",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=OAUTH_STATE_EXPIRY_MINUTES)
+    )
+    db.add(oauth_state)
+    await db.commit()
 
     auth_url = get_authorization_url(state)
 
@@ -111,16 +121,39 @@ async def xero_callback(
     """
     OAuth callback endpoint.
     Exchanges the authorization code for tokens and stores the connection.
+
+    Note: This endpoint is called by Xero, so it cannot use JWT auth.
+    We validate the state token instead.
     """
-    # Validate state
-    state_data = _oauth_states.pop(state, None)
-    if not state_data:
+    # Look up state in database
+    result = await db.execute(
+        select(OAuthState).where(OAuthState.state == state)
+    )
+    state_record = result.scalar_one_or_none()
+
+    if not state_record:
+        logger.warning(f"OAuth callback with invalid state: {state[:20]}...")
         raise HTTPException(
             status_code=400,
             detail="Invalid or expired state parameter"
         )
 
-    user_id = state_data["user_id"]
+    # Check if state has expired
+    if state_record.expires_at < datetime.now(timezone.utc):
+        # Clean up expired state
+        await db.delete(state_record)
+        await db.commit()
+        logger.warning(f"OAuth callback with expired state for user: {state_record.user_id}")
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth state has expired. Please try connecting again."
+        )
+
+    user_id = state_record.user_id
+
+    # Delete the used state (one-time use)
+    await db.delete(state_record)
+    await db.commit()
 
     try:
         # Exchange code for tokens
@@ -171,21 +204,23 @@ async def xero_callback(
             db.add(connection)
 
         await db.commit()
+        logger.info(f"Xero connected for user: {user_id}, tenant: {tenant.get('tenantName')}")
 
         # Auto-sync data after successful connection
         try:
             await sync_xero_data(db=db, user_id=user_id, sync_type="full")
+            logger.info(f"Auto-sync completed for user: {user_id}")
 
             # Run detection after initial sync
             try:
                 from app.detection.scheduler import run_detections_after_sync
                 await run_detections_after_sync(user_id=user_id, sync_type="xero")
             except Exception as detection_err:
-                print(f"Post-sync detection failed: {detection_err}")
+                logger.error(f"Post-sync detection failed: {detection_err}")
 
         except Exception as sync_err:
             # Log but don't fail - user can manually sync later
-            print(f"Auto-sync failed after Xero connection: {sync_err}")
+            logger.error(f"Auto-sync failed after Xero connection: {sync_err}")
 
         # Mark onboarding as complete
         try:
@@ -205,6 +240,7 @@ async def xero_callback(
         return RedirectResponse(url=frontend_url)
 
     except Exception as e:
+        logger.error(f"Xero OAuth callback error: {e}")
         # Redirect to frontend with error
         frontend_url = f"{settings.FRONTEND_URL}?xero_error={str(e)}"
         return RedirectResponse(url=frontend_url)
@@ -212,14 +248,14 @@ async def xero_callback(
 
 @router.post("/disconnect")
 async def disconnect_xero(
-    user_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Disconnect Xero integration for a user.
+    Disconnect Xero integration for the authenticated user.
     """
     result = await db.execute(
-        select(XeroConnection).where(XeroConnection.user_id == user_id)
+        select(XeroConnection).where(XeroConnection.user_id == current_user.id)
     )
     connection = result.scalar_one_or_none()
 
@@ -228,6 +264,7 @@ async def disconnect_xero(
         connection.access_token = None
         connection.refresh_token = None
         await db.commit()
+        logger.info(f"Xero disconnected for user: {current_user.id}")
 
     return {"success": True, "message": "Xero disconnected successfully"}
 
@@ -239,10 +276,11 @@ async def disconnect_xero(
 @router.post("/sync", response_model=schemas.XeroSyncResult)
 async def sync_from_xero(
     request: schemas.XeroSyncRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Sync data from Xero to Tamio.
+    Sync data from Xero to Tamio for the authenticated user.
 
     Sync types:
     - "full": Sync all data (contacts, invoices, repeating invoices)
@@ -255,16 +293,15 @@ async def sync_from_xero(
     """
     result = await sync_xero_data(
         db=db,
-        user_id=request.user_id,
+        user_id=current_user.id,  # Use authenticated user, ignore request.user_id
         sync_type=request.sync_type
     )
 
     # After main sync, also pull outstanding invoices to update billing_config
-    # This ensures forecast shows correct revenue from Xero invoices
     if request.sync_type in ["full", "invoices"]:
         from app.xero.sync_service import SyncService
         try:
-            sync_service = SyncService(db, request.user_id)
+            sync_service = SyncService(db, current_user.id)
             invoices_processed, clients_updated, invoice_errors = await sync_service.pull_invoices_from_xero()
             result["invoices_synced"] = {
                 "processed": invoices_processed,
@@ -272,14 +309,14 @@ async def sync_from_xero(
                 "errors": invoice_errors
             }
         except Exception as e:
+            logger.error(f"Invoice sync error: {e}")
             result["invoices_synced"] = {"error": str(e)}
 
-    # Run detection engine after sync to identify any new alerts
-    # This catches late payments, unexpected expenses, etc. from the synced data
+    # Run detection engine after sync
     try:
         from app.detection.scheduler import run_detections_after_sync
         detection_result = await run_detections_after_sync(
-            user_id=request.user_id,
+            user_id=current_user.id,
             sync_type="xero"
         )
         result["detections"] = {
@@ -287,6 +324,7 @@ async def sync_from_xero(
             "notifications_sent": detection_result.get("notifications_sent", 0),
         }
     except Exception as e:
+        logger.error(f"Detection error after sync: {e}")
         result["detections"] = {"error": str(e)}
 
     return schemas.XeroSyncResult(**result)
@@ -294,25 +332,22 @@ async def sync_from_xero(
 
 @router.post("/sync-invoices")
 async def sync_invoices_only(
-    user_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Sync only outstanding invoices from Xero.
-
-    This updates client billing_config.outstanding_invoices which is used
-    by the forecast engine to show expected revenue from actual invoices.
+    Sync only outstanding invoices from Xero for the authenticated user.
     """
     from app.xero.sync_service import SyncService
 
-    connection = await get_valid_connection(db, user_id)
+    connection = await get_valid_connection(db, current_user.id)
     if not connection:
         raise HTTPException(
             status_code=400,
             detail="No active Xero connection. Please connect to Xero first."
         )
 
-    sync_service = SyncService(db, user_id)
+    sync_service = SyncService(db, current_user.id)
     invoices_processed, clients_updated, errors = await sync_service.pull_invoices_from_xero()
 
     return {
@@ -326,16 +361,13 @@ async def sync_invoices_only(
 
 @router.get("/preview")
 async def preview_xero_data(
-    user_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Preview data from Xero before syncing.
-    Returns a summary of what would be imported.
+    Preview data from Xero before syncing for the authenticated user.
     """
-    import traceback
-
-    connection = await get_valid_connection(db, user_id)
+    connection = await get_valid_connection(db, current_user.id)
     if not connection:
         raise HTTPException(
             status_code=400,
@@ -345,7 +377,6 @@ async def preview_xero_data(
     try:
         xero_client = XeroClient(connection)
 
-        # Get data with error handling for each call
         invoices = []
         contacts = []
         repeating = []
@@ -355,38 +386,31 @@ async def preview_xero_data(
         try:
             organisation = xero_client.get_organisation()
         except Exception as org_err:
-            print(f"Error getting organisation: {org_err}")
-            traceback.print_exc()
+            logger.error(f"Error getting organisation: {org_err}")
 
         try:
             invoices = xero_client.get_outstanding_invoices()
         except Exception as inv_err:
-            print(f"Error getting invoices: {inv_err}")
-            traceback.print_exc()
+            logger.error(f"Error getting invoices: {inv_err}")
 
         try:
             contacts = xero_client.get_contacts(is_customer=True)
         except Exception as contact_err:
-            print(f"Error getting contacts: {contact_err}")
-            traceback.print_exc()
+            logger.error(f"Error getting contacts: {contact_err}")
 
         try:
             repeating = xero_client.get_repeating_invoices()
         except Exception as rep_err:
-            print(f"Error getting repeating invoices: {rep_err}")
-            traceback.print_exc()
+            logger.error(f"Error getting repeating invoices: {rep_err}")
 
         try:
             bank_summary = xero_client.get_bank_summary()
         except Exception as bank_err:
-            print(f"Error getting bank summary: {bank_err}")
-            traceback.print_exc()
+            logger.error(f"Error getting bank summary: {bank_err}")
 
-        # Separate receivables and payables
         receivables = [i for i in invoices if i.get("type") == "ACCREC"]
         payables = [i for i in invoices if i.get("type") == "ACCPAY"]
 
-        # Calculate totals
         total_receivables = sum(i.get("amount_due", 0) for i in receivables)
         total_payables = sum(i.get("amount_due", 0) for i in payables)
 
@@ -409,7 +433,7 @@ async def preview_xero_data(
         }
 
     except Exception as e:
-        traceback.print_exc()
+        logger.error(f"Error fetching Xero preview: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Error fetching Xero data: {str(e)}"
@@ -422,13 +446,13 @@ async def preview_xero_data(
 
 @router.get("/payment-analysis")
 async def get_payment_analysis(
-    user_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Analyze payment behavior from Xero aged receivables.
+    Analyze payment behavior from Xero aged receivables for the authenticated user.
     """
-    connection = await get_valid_connection(db, user_id)
+    connection = await get_valid_connection(db, current_user.id)
     if not connection:
         raise HTTPException(
             status_code=400,
@@ -437,13 +461,12 @@ async def get_payment_analysis(
 
     try:
         xero_client = XeroClient(connection)
-        results = await analyze_payment_behavior(db, user_id, xero_client)
-
+        results = await analyze_payment_behavior(db, current_user.id, xero_client)
         await db.commit()
-
         return results
 
     except Exception as e:
+        logger.error(f"Payment analysis error: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Error analyzing payment behavior: {str(e)}"
@@ -456,16 +479,16 @@ async def get_payment_analysis(
 
 @router.get("/sync-history")
 async def get_sync_history(
-    user_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     limit: int = Query(default=10, le=50),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get sync history for a user.
+    Get sync history for the authenticated user.
     """
     result = await db.execute(
         select(XeroSyncLog)
-        .where(XeroSyncLog.user_id == user_id)
+        .where(XeroSyncLog.user_id == current_user.id)
         .order_by(XeroSyncLog.started_at.desc())
         .limit(limit)
     )
@@ -487,3 +510,15 @@ async def get_sync_history(
             for log in logs
         ]
     }
+
+
+# ============================================================================
+# CLEANUP (for maintenance)
+# ============================================================================
+
+async def cleanup_expired_oauth_states(db: AsyncSession):
+    """Remove expired OAuth states from the database."""
+    await db.execute(
+        delete(OAuthState).where(OAuthState.expires_at < datetime.now(timezone.utc))
+    )
+    await db.commit()

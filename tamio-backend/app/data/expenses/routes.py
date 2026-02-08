@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
-from typing import List
+from typing import List, TYPE_CHECKING
 from datetime import date
 
 from app.database import get_db
@@ -13,8 +13,10 @@ from app.data.expenses.schemas import (
     ExpenseBucketUpdate,
     ExpenseBucketWithEventsResponse,
 )
-from app.data.event_generator import generate_events_from_bucket
-from app.config import settings
+from app.auth.dependencies import get_current_user
+
+if TYPE_CHECKING:
+    from app.services.obligations import ObligationService
 
 router = APIRouter()
 
@@ -32,6 +34,7 @@ async def _sync_expense_to_xero(db: AsyncSession, expense: models.ExpenseBucket,
 @router.post("/expenses", response_model=ExpenseBucketWithEventsResponse)
 async def create_expense_bucket(
     data: ExpenseBucketCreate,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     sync_to_xero: bool = Query(default=True, description="Sync to Xero if connected"),
     create_xero_bill: bool = Query(default=False, description="Create repeating bill in Xero for fixed expenses"),
@@ -41,16 +44,9 @@ async def create_expense_bucket(
     If sync_to_xero=True and user has an active Xero connection,
     the expense will be pushed to Xero as a Supplier Contact.
     """
-    # Verify user exists
-    result = await db.execute(
-        select(models.User).where(models.User.id == data.user_id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Create bucket
+    # Create bucket - use authenticated user's ID
     bucket = models.ExpenseBucket(
-        user_id=data.user_id,
+        user_id=current_user.id,
         name=data.name,
         category=data.category,
         bucket_type=data.bucket_type,
@@ -69,14 +65,10 @@ async def create_expense_bucket(
     await db.commit()
     await db.refresh(bucket)
 
-    # Generate cash events (legacy approach)
-    events = await generate_events_from_bucket(db, bucket)
-
-    # Create ObligationAgreement from expense bucket (new canonical approach)
-    if settings.USE_OBLIGATION_SYSTEM:
-        from app.services.obligations import ObligationService
-        obligation_service = ObligationService(db)
-        await obligation_service.create_obligation_from_expense(bucket)
+    # Create ObligationAgreement and schedules from expense bucket
+    from app.services.obligations import ObligationService
+    obligation_svc = ObligationService(db)
+    await obligation_svc.create_obligation_from_expense(bucket)
 
     # Sync to Xero if requested
     if sync_to_xero:
@@ -85,18 +77,18 @@ async def create_expense_bucket(
 
     return ExpenseBucketWithEventsResponse(
         bucket=bucket,
-        generated_events=events
+        generated_events=[]  # Events are now computed on-the-fly from obligations
     )
 
 
 @router.get("/expenses", response_model=List[ExpenseBucketResponse])
 async def get_expense_buckets(
-    user_id: str = Query(...),
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get all expense buckets for a user."""
+    """Get all expense buckets for the authenticated user."""
     result = await db.execute(
-        select(models.ExpenseBucket).where(models.ExpenseBucket.user_id == user_id)
+        select(models.ExpenseBucket).where(models.ExpenseBucket.user_id == current_user.id)
     )
     return result.scalars().all()
 
@@ -105,6 +97,7 @@ async def get_expense_buckets(
 async def update_expense_bucket(
     bucket_id: str,
     data: ExpenseBucketUpdate,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     sync_to_xero: bool = Query(default=True, description="Sync changes to Xero if connected"),
 ):
@@ -119,6 +112,10 @@ async def update_expense_bucket(
     bucket = result.scalar_one_or_none()
     if not bucket:
         raise HTTPException(status_code=404, detail="Expense bucket not found")
+
+    # Verify ownership - user can only update their own expenses
+    if bucket.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this expense")
 
     # Check for locked fields (Xero-controlled)
     locked = bucket.locked_fields or []
@@ -144,22 +141,10 @@ async def update_expense_bucket(
     await db.commit()
     await db.refresh(bucket)
 
-    # Regenerate events
-    await db.execute(
-        delete(models.CashEvent).where(
-            models.CashEvent.bucket_id == bucket_id,
-            models.CashEvent.date >= date.today()
-        )
-    )
-    await db.commit()
-
-    events = await generate_events_from_bucket(db, bucket)
-
-    # Sync ObligationAgreement when expense is updated (new canonical approach)
-    if settings.USE_OBLIGATION_SYSTEM:
-        from app.services.obligations import ObligationService
-        obligation_service = ObligationService(db)
-        await obligation_service.sync_obligation_from_expense(bucket)
+    # Sync ObligationAgreement when expense is updated
+    from app.services.obligations import ObligationService
+    obligation_svc = ObligationService(db)
+    await obligation_svc.sync_obligation_from_expense(bucket)
 
     # Sync to Xero if requested and expense is linked
     if sync_to_xero and bucket.xero_contact_id:
@@ -168,13 +153,14 @@ async def update_expense_bucket(
 
     return ExpenseBucketWithEventsResponse(
         bucket=bucket,
-        generated_events=events
+        generated_events=[]  # Events are now computed on-the-fly from obligations
     )
 
 
 @router.delete("/expenses/{bucket_id}")
 async def delete_expense_bucket(
     bucket_id: str,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     archive_in_xero: bool = Query(default=True, description="Archive the supplier in Xero"),
 ):
@@ -190,6 +176,10 @@ async def delete_expense_bucket(
     if not bucket:
         raise HTTPException(status_code=404, detail="Expense bucket not found")
 
+    # Verify ownership - user can only delete their own expenses
+    if bucket.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this expense")
+
     # Archive in Xero if linked
     if archive_in_xero and bucket.xero_contact_id:
         from app.xero.sync_service import SyncService
@@ -198,6 +188,11 @@ async def delete_expense_bucket(
         if not success:
             # Log but don't fail - Tamio deletion should still proceed
             print(f"Warning: Failed to archive expense in Xero: {error}")
+
+    # Clean up related obligations
+    from app.services.obligations import ObligationService
+    obligation_svc = ObligationService(db)
+    await obligation_svc.delete_obligations_for_expense(bucket_id)
 
     await db.delete(bucket)
     await db.commit()

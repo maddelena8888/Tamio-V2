@@ -24,7 +24,6 @@ from app.data.balances.models import CashAccount
 from app.data.clients.models import Client
 from app.data.expenses.models import ExpenseBucket
 from app.data.obligations.models import ObligationAgreement, ObligationSchedule
-from app.data.events.models import CashEvent
 from app.data.user_config.models import UserConfiguration, SafetyMode
 from app.detection.models import DetectionRule, DetectionType, DetectionAlert, AlertSeverity, AlertStatus
 from app.preparation.models import PreparedAction, ActionOption, ActionType, ActionStatus, RiskLevel
@@ -954,7 +953,8 @@ async def seed_agencyco_data(db: AsyncSession, force: bool = False) -> dict:
             description="Design milestone payment of $52,500 from RetailCo Rebrand is now 14 days overdue. This is unusual - the invoice was due on completion of design phase.",
             cash_impact=Decimal("-52500.00"),
             context_data={
-                "client_name": "RetailCo Rebrand",
+                "client_id": retailco_client.id,
+                "client_name": retailco_client.name,
                 "invoice_amount": 52500,
                 "days_overdue": 14,
                 "relationship_type": "transactional",
@@ -1040,7 +1040,7 @@ AgencyCo Finance Team""",
     alert2 = DetectionAlert(
         id=generate_id("alert"),
         user_id=user_id,
-        detection_type="staffing_change",
+        detection_type="headcount_change",  # Use enum value from DetectionType
         severity="this_week",
         status="active",
         title="New Hire Impact: Senior Developer starts Monday",
@@ -1119,7 +1119,7 @@ AgencyCo Finance Team""",
     alert3 = DetectionAlert(
         id=generate_id("alert"),
         user_id=user_id,
-        detection_type="expense_anomaly",
+        detection_type="unexpected_expense",  # Use enum value from DetectionType
         severity="this_week",
         status="active",
         title="Vendor Rate Increase: Figma renewal +40%",
@@ -1265,19 +1265,20 @@ AgencyCo""",
     db.add(option4_1)
 
     # Alert 5: Client Contract Ending - HealthTech Phase 1
-    healthtech_client = next((c for c in clients if c.name == "HealthTech"), None)
+    healthtech_client = next((c for c in clients if "HealthTech" in c.name), None)
     if healthtech_client:
         alert5 = DetectionAlert(
             id=generate_id("alert"),
             user_id=user_id,
-            detection_type="revenue_risk",
+            detection_type="client_churn",  # Use enum value from DetectionType
             severity="upcoming",
             status="active",
             title="Client Contract Ending: HealthTech Phase 1",
             description="HealthTech Phase 1 contract ($18K/month) ends in 6 weeks. No Phase 2 contract signed yet. Represents 12% of monthly revenue.",
             cash_impact=Decimal("-54000.00"),
             context_data={
-                "client_name": "HealthTech",
+                "client_id": healthtech_client.id,
+                "client_name": healthtech_client.name,
                 "contract_value_monthly": 18000,
                 "contract_end_weeks": 6,
                 "revenue_percent": 12,
@@ -1355,405 +1356,121 @@ AgencyCo""",
         db.add(option5_1)
         db.add(option5_2)
 
+    # Alert 6: High Churn Risk Client - LocalBiz Network
+    localbiz_client = next((c for c in clients if c.name == "LocalBiz Network"), None)
+    if localbiz_client:
+        alert6 = DetectionAlert(
+            id=generate_id("alert"),
+            user_id=user_id,
+            detection_type="client_churn",  # Use enum value from DetectionType
+            severity="this_week",
+            status="active",
+            title="High Churn Risk: LocalBiz Network",
+            description="LocalBiz Network shows high churn risk signals: declining engagement, delayed payments, and reduced scope requests. This client represents $25K/month (3.5% of revenue).",
+            cash_impact=Decimal("-75000.00"),  # 3 months impact
+            context_data={
+                "client_id": localbiz_client.id,
+                "client_name": localbiz_client.name,
+                "monthly_revenue": 25000,
+                "revenue_percent": 3.5,
+                "churn_risk": "high",
+                "risk_signals": ["payment_delays", "reduced_engagement", "scope_reduction_requests"],
+            },
+            deadline=today + timedelta(days=14),
+        )
+        db.add(alert6)
+        alerts_created.append(alert6)
+        await db.flush()
+
+        action6 = PreparedAction(
+            id=generate_id("action"),
+            user_id=user_id,
+            alert_id=alert6.id,
+            action_type="invoice_follow_up",
+            status="pending_approval",
+            problem_summary="LocalBiz Network showing churn signals. Proactive outreach recommended to retain this $25K/month client.",
+            deadline=today + timedelta(days=7),
+        )
+        db.add(action6)
+        await db.flush()
+
+        option6_1 = ActionOption(
+            id=generate_id("opt"),
+            action_id=action6.id,
+            is_recommended=True,
+            risk_level="medium",
+            reasoning=[
+                "Client has delayed recent payments",
+                "Engagement metrics down 30% this quarter",
+                "Proactive check-in may prevent churn",
+            ],
+            prepared_content={
+                "email_subject": "Checking in - How can we better support LocalBiz?",
+                "email_body": """Hi,
+
+I wanted to personally reach out to see how things are going with our partnership. We've noticed a few changes in our recent interactions and I'd love to understand if there's anything we can do differently.
+
+Would you have 15 minutes this week for a quick call? I'd like to ensure we're delivering maximum value for your business.
+
+Best regards,
+AgencyCo""",
+                "recipient": "contact@localbiz.example.com",
+                "tone": "consultative",
+            },
+            cash_impact=Decimal("25000.00"),
+        )
+        db.add(option6_1)
+
     await db.flush()
 
     # =========================================================================
-    # GENERATE CASH EVENTS for forecast (13 weeks)
+    # Generate Obligations from Clients and Expenses
     # =========================================================================
-    # Note: In production, the client/expense creation routes auto-generate these.
-    # For seed data, we create representative events manually.
+    # Note: Obligations are now the canonical source for forecasts.
+    # Import ObligationService and generate obligations from seeded clients/expenses.
+    from app.services.obligations import ObligationService
+    obligation_service = ObligationService(db)
 
-    cash_events = []
+    obligations_created = 0
+    schedules_created = 0
 
-    # Helper function to get payment date for a given billing day in a month
-    def get_payment_date_for_month(base_date: date, month_offset: int, billing_day: int, payment_terms_days: int, payment_delay: int = 0) -> date:
-        """Calculate payment date for a specific month offset.
-
-        Args:
-            base_date: Reference date (today)
-            month_offset: How many months in the future
-            billing_day: Day of month the invoice is sent
-            payment_terms_days: Payment terms in days (e.g., 7, 15, 30, 45)
-            payment_delay: Additional delay beyond terms (avg_payment_delay_days)
-        """
-        target_month = base_date.month + month_offset
-        target_year = base_date.year
-        while target_month > 12:
-            target_month -= 12
-            target_year += 1
-        # Clamp billing day to valid range for the month
-        import calendar
-        max_day = calendar.monthrange(target_year, target_month)[1]
-        actual_day = min(billing_day, max_day)
-        billing_date = date(target_year, target_month, actual_day)
-        # Add payment terms + any delay
-        return billing_date + timedelta(days=payment_terms_days + payment_delay)
-
-    # Generate revenue events from clients - distributed across different days
-    def parse_payment_terms(terms_str: str) -> int:
-        """Parse payment terms string to days."""
-        if not terms_str:
-            return 30
-        terms_map = {
-            "due_on_receipt": 0,
-            "net_7": 7,
-            "net_15": 15,
-            "net_30": 30,
-            "net_45": 45,
-            "net_60": 60,
-        }
-        return terms_map.get(terms_str, 30)
-
+    # Generate obligations from clients (with schedules)
     for client in clients:
-        config = client.billing_config or {}
-
-        if client.client_type == "retainer":
-            # Retainer: uses RetainerBillingConfig schema
-            amount = config.get("amount", "0")
-            billing_day = config.get("invoice_day", 1)
-            payment_terms = config.get("payment_terms", "net_30")
-            payment_terms_days = parse_payment_terms(payment_terms)
-
-            if amount and amount != "0":
-                # Generate 4 months of expected revenue
-                for month_offset in range(4):
-                    payment_date = get_payment_date_for_month(
-                        today, month_offset, billing_day, payment_terms_days, client.avg_payment_delay_days
+        try:
+            obligation = await obligation_service.create_obligation_from_client(
+                client, auto_generate_schedules=True
+            )
+            if obligation:
+                obligations_created += 1
+                # Count schedules for this obligation
+                from sqlalchemy import func
+                schedule_count = await db.execute(
+                    select(func.count()).select_from(ObligationSchedule).where(
+                        ObligationSchedule.obligation_id == obligation.id
                     )
-                    week_number = max(0, (payment_date - today).days // 7)
-                    if week_number < 13:
-                        event = CashEvent(
-                            id=generate_id("evt"),
-                            user_id=user_id,
-                            client_id=client.id,
-                            direction="in",
-                            date=payment_date,
-                            week_number=week_number,
-                            amount=Decimal(str(amount)),
-                            event_type="expected_revenue",
-                            category="retainer",
-                            confidence="high" if client.payment_behavior == "on_time" else "medium",
-                            notes=f"{client.name} - Monthly Retainer",
-                        )
-                        cash_events.append(event)
-
-        elif client.client_type == "project":
-            # Project: uses ProjectBillingConfig with milestones
-            milestones = config.get("milestones", [])
-            for milestone in milestones:
-                status = milestone.get("status", "pending")
-                # Only create events for pending milestones (not paid ones)
-                if status in ("pending", "completed"):
-                    expected_date_str = milestone.get("expected_date")
-                    if expected_date_str:
-                        try:
-                            expected_date = date.fromisoformat(expected_date_str)
-                        except ValueError:
-                            continue
-
-                        # Add payment terms delay for pending milestones
-                        payment_terms = milestone.get("payment_terms", "net_15")
-                        payment_terms_days = parse_payment_terms(payment_terms)
-
-                        # For "completed" (delivered but not paid), payment is due now + terms
-                        if status == "completed":
-                            payment_date = expected_date + timedelta(days=payment_terms_days + client.avg_payment_delay_days)
-                        else:
-                            # For "pending", expected_date is when we expect delivery
-                            payment_date = expected_date + timedelta(days=payment_terms_days + client.avg_payment_delay_days)
-
-                        # Only include future events within 13-week window
-                        days_from_today = (payment_date - today).days
-                        if days_from_today >= -14 and days_from_today < 91:  # Include recently overdue
-                            week_number = max(0, days_from_today // 7)
-                            trigger_type = milestone.get("trigger_type", "date")
-
-                            # Confidence depends on trigger type and status
-                            if status == "completed":
-                                confidence = "high"  # Delivered, just waiting for payment
-                            elif trigger_type == "date":
-                                confidence = "high"  # Date-based = predictable
-                            else:
-                                confidence = "medium"  # Delivery-based = less certain
-
-                            event = CashEvent(
-                                id=generate_id("evt"),
-                                user_id=user_id,
-                                client_id=client.id,
-                                direction="in",
-                                date=payment_date,
-                                week_number=week_number,
-                                amount=Decimal(str(milestone.get("amount", "0"))),
-                                event_type="expected_revenue",
-                                category="milestone",
-                                confidence=confidence,
-                                notes=f"{client.name} - {milestone.get('name', 'Milestone')}",
-                            )
-                            cash_events.append(event)
-
-        elif client.client_type == "usage":
-            # Usage: uses UsageBillingConfig with settlement_frequency
-            typical_amount = config.get("typical_amount", "0")
-            settlement_freq = config.get("settlement_frequency", "monthly")
-            payment_terms = config.get("payment_terms", "net_30")
-            payment_terms_days = parse_payment_terms(payment_terms)
-
-            if typical_amount and typical_amount != "0":
-                if settlement_freq == "weekly":
-                    # Weekly settlements - 13 weeks
-                    for week_offset in range(13):
-                        # Settle on Friday, payment after terms
-                        settle_date = today + timedelta(weeks=week_offset)
-                        days_to_friday = (4 - settle_date.weekday()) % 7
-                        settle_date = settle_date + timedelta(days=days_to_friday)
-                        payment_date = settle_date + timedelta(days=payment_terms_days + client.avg_payment_delay_days)
-
-                        week_number = max(0, (payment_date - today).days // 7)
-                        if week_number < 13:
-                            event = CashEvent(
-                                id=generate_id("evt"),
-                                user_id=user_id,
-                                client_id=client.id,
-                                direction="in",
-                                date=payment_date,
-                                week_number=week_number,
-                                amount=Decimal(str(typical_amount)),
-                                event_type="expected_revenue",
-                                category="usage",
-                                confidence="low",  # Variable revenue
-                                notes=f"{client.name} - Weekly Usage Settlement",
-                            )
-                            cash_events.append(event)
-
-                elif settlement_freq == "bi_weekly":
-                    # Bi-weekly settlements
-                    for week_offset in range(0, 13, 2):
-                        settle_date = today + timedelta(weeks=week_offset)
-                        days_to_friday = (4 - settle_date.weekday()) % 7
-                        settle_date = settle_date + timedelta(days=days_to_friday)
-                        payment_date = settle_date + timedelta(days=payment_terms_days + client.avg_payment_delay_days)
-
-                        week_number = max(0, (payment_date - today).days // 7)
-                        if week_number < 13:
-                            event = CashEvent(
-                                id=generate_id("evt"),
-                                user_id=user_id,
-                                client_id=client.id,
-                                direction="in",
-                                date=payment_date,
-                                week_number=week_number,
-                                amount=Decimal(str(typical_amount)),
-                                event_type="expected_revenue",
-                                category="usage",
-                                confidence="low",
-                                notes=f"{client.name} - Bi-Weekly Usage Settlement",
-                            )
-                            cash_events.append(event)
-
-                else:  # monthly
-                    # Monthly settlements - settle on 1st, pay after terms
-                    for month_offset in range(4):
-                        payment_date = get_payment_date_for_month(
-                            today, month_offset, 1, payment_terms_days, client.avg_payment_delay_days
-                        )
-                        week_number = max(0, (payment_date - today).days // 7)
-                        if week_number < 13:
-                            event = CashEvent(
-                                id=generate_id("evt"),
-                                user_id=user_id,
-                                client_id=client.id,
-                                direction="in",
-                                date=payment_date,
-                                week_number=week_number,
-                                amount=Decimal(str(typical_amount)),
-                                event_type="expected_revenue",
-                                category="usage",
-                                confidence="low",
-                                notes=f"{client.name} - Monthly Usage Settlement",
-                            )
-                            cash_events.append(event)
-
-        elif client.client_type == "mixed":
-            # Mixed: combination of retainer/project/usage components
-            composition = config.get("composition", {})
-
-            # Handle retainer component
-            retainer_config = config.get("retainer")
-            if retainer_config:
-                amount = retainer_config.get("amount", "0")
-                billing_day = retainer_config.get("invoice_day", 1)
-                payment_terms = retainer_config.get("payment_terms", "net_30")
-                payment_terms_days = parse_payment_terms(payment_terms)
-
-                if amount and amount != "0":
-                    for month_offset in range(4):
-                        payment_date = get_payment_date_for_month(
-                            today, month_offset, billing_day, payment_terms_days, client.avg_payment_delay_days
-                        )
-                        week_number = max(0, (payment_date - today).days // 7)
-                        if week_number < 13:
-                            event = CashEvent(
-                                id=generate_id("evt"),
-                                user_id=user_id,
-                                client_id=client.id,
-                                direction="in",
-                                date=payment_date,
-                                week_number=week_number,
-                                amount=Decimal(str(amount)),
-                                event_type="expected_revenue",
-                                category="retainer",
-                                confidence="high" if client.payment_behavior == "on_time" else "medium",
-                                notes=f"{client.name} - Retainer Component",
-                            )
-                            cash_events.append(event)
-
-            # Handle project component (milestones)
-            project_config = config.get("project")
-            if project_config:
-                milestones = project_config.get("milestones", [])
-                for milestone in milestones:
-                    status = milestone.get("status", "pending")
-                    if status in ("pending", "completed"):
-                        expected_date_str = milestone.get("expected_date")
-                        if expected_date_str:
-                            try:
-                                expected_date = date.fromisoformat(expected_date_str)
-                            except ValueError:
-                                continue
-
-                            payment_terms = milestone.get("payment_terms", "net_15")
-                            payment_terms_days = parse_payment_terms(payment_terms)
-                            payment_date = expected_date + timedelta(days=payment_terms_days + client.avg_payment_delay_days)
-
-                            days_from_today = (payment_date - today).days
-                            if days_from_today >= -14 and days_from_today < 91:
-                                week_number = max(0, days_from_today // 7)
-                                event = CashEvent(
-                                    id=generate_id("evt"),
-                                    user_id=user_id,
-                                    client_id=client.id,
-                                    direction="in",
-                                    date=payment_date,
-                                    week_number=week_number,
-                                    amount=Decimal(str(milestone.get("amount", "0"))),
-                                    event_type="expected_revenue",
-                                    category="milestone",
-                                    confidence="medium",
-                                    notes=f"{client.name} - {milestone.get('name', 'Milestone')}",
-                                )
-                                cash_events.append(event)
-
-            # Handle usage component
-            usage_config = config.get("usage")
-            if usage_config:
-                typical_amount = usage_config.get("typical_amount", "0")
-                payment_terms = usage_config.get("payment_terms", "net_30")
-                payment_terms_days = parse_payment_terms(payment_terms)
-
-                if typical_amount and typical_amount != "0":
-                    for month_offset in range(4):
-                        payment_date = get_payment_date_for_month(
-                            today, month_offset, 1, payment_terms_days, client.avg_payment_delay_days
-                        )
-                        week_number = max(0, (payment_date - today).days // 7)
-                        if week_number < 13:
-                            event = CashEvent(
-                                id=generate_id("evt"),
-                                user_id=user_id,
-                                client_id=client.id,
-                                direction="in",
-                                date=payment_date,
-                                week_number=week_number,
-                                amount=Decimal(str(typical_amount)),
-                                event_type="expected_revenue",
-                                category="usage",
-                                confidence="low",
-                                notes=f"{client.name} - Usage Component",
-                            )
-                            cash_events.append(event)
-
-    # Generate expense events
-    for expense in expenses:
-        freq = expense.frequency or "monthly"
-
-        if freq == "bi_weekly":
-            # Every 2 weeks - bi-weekly payroll on Fridays
-            for week_offset in range(0, 13, 2):
-                event_date = today + timedelta(weeks=week_offset)
-                # Find the Friday of that week
-                days_to_friday = (4 - event_date.weekday()) % 7
-                event_date = event_date + timedelta(days=days_to_friday)
-                # Calculate actual week number
-                week_number = max(0, (event_date - today).days // 7)
-
-                event = CashEvent(
-                    id=generate_id("evt"),
-                    user_id=user_id,
-                    bucket_id=expense.id,
-                    direction="out",
-                    date=event_date,
-                    week_number=week_number,
-                    amount=expense.monthly_amount / 2,  # Bi-weekly = half monthly
-                    event_type="expected_expense",
-                    category=expense.category,
-                    confidence="high",
-                    notes=f"{expense.name}",
                 )
-                cash_events.append(event)
+                schedules_created += schedule_count.scalar() or 0
+        except Exception as e:
+            logger.warning(f"Failed to create obligation for client {client.name}: {e}")
 
-        elif freq == "monthly":
-            # Monthly expenses - use actual due_day for proper distribution
-            for month_offset in range(4):  # ~13 weeks = 3+ months
-                due_day = expense.due_day or 15
-
-                if month_offset == 0:
-                    event_date = get_due_day_this_month(due_day)
-                else:
-                    # Future months
-                    future_month = today.month + month_offset
-                    future_year = today.year
-                    while future_month > 12:
-                        future_month -= 12
-                        future_year += 1
-                    import calendar
-                    max_day = calendar.monthrange(future_year, future_month)[1]
-                    event_date = date(future_year, future_month, min(due_day, max_day))
-
-                # Calculate actual week number from the event date
-                week_number = max(0, (event_date - today).days // 7)
-                if week_number < 13:  # Only include events within 13-week window
-                    event = CashEvent(
-                        id=generate_id("evt"),
-                        user_id=user_id,
-                        bucket_id=expense.id,
-                        direction="out",
-                        date=event_date,
-                        week_number=week_number,
-                        amount=expense.monthly_amount,
-                        event_type="expected_expense",
-                        category=expense.category,
-                        confidence="high" if expense.is_stable else "medium",
-                        notes=f"{expense.name}",
+    # Generate obligations from expenses (with schedules)
+    for expense in expenses:
+        try:
+            obligation = await obligation_service.create_obligation_from_expense(
+                expense, auto_generate_schedules=True
+            )
+            if obligation:
+                obligations_created += 1
+                # Count schedules for this obligation
+                from sqlalchemy import func
+                schedule_count = await db.execute(
+                    select(func.count()).select_from(ObligationSchedule).where(
+                        ObligationSchedule.obligation_id == obligation.id
                     )
-                    cash_events.append(event)
-
-    # Add tax payment event
-    tax_event = CashEvent(
-        id=generate_id("evt"),
-        user_id=user_id,
-        direction="out",
-        date=today + timedelta(days=18),
-        week_number=3,  # Roughly 3 weeks out
-        amount=Decimal("22000.00"),
-        event_type="expected_expense",
-        category="other",
-        confidence="high",
-        notes="Quarterly Estimated Tax Payment",
-    )
-    cash_events.append(tax_event)
-
-    for event in cash_events:
-        db.add(event)
+                )
+                schedules_created += schedule_count.scalar() or 0
+        except Exception as e:
+            logger.warning(f"Failed to create obligation for expense {expense.name}: {e}")
 
     await db.commit()
 
@@ -1766,7 +1483,8 @@ AgencyCo""",
             "clients": len(clients),
             "expenses": len(expenses),
             "overdue_invoices": len(overdue_obligations),
-            "cash_events": len(cash_events),
+            "obligations": obligations_created,
+            "schedules": schedules_created,
             "detection_rules": len(detection_rules),
             "automation_rules": 0,  # Skipped due to enum migration issue
             "alerts": len(alerts_created),

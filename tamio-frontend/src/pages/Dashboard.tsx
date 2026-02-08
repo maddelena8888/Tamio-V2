@@ -16,18 +16,33 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart';
 import { ComposedChart, Area, XAxis, YAxis, Line, CartesianGrid } from 'recharts';
-import { ArrowRight, X, Check, FileText, Info } from 'lucide-react';
+import { ArrowRight, X, Check, FileText, Info, Bell, Plus, Upload, Link2, Mail, Copy } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { Input } from '@/components/ui/input';
 import { getForecast } from '@/lib/api/forecast';
 import { getCashPosition } from '@/lib/api/data';
 import { getRules } from '@/lib/api/scenarios';
 import { getActionQueue, type ActionCard, type ActionQueue } from '@/lib/api/actions';
 import type { ForecastResponse, CashPositionResponse, FinancialRule } from '@/lib/api/types';
+import { AlertsPanelSection } from '@/components/dashboard/alerts-panel';
 
 // Mock data based on AgencyCo demo account
 const MOCK_ACTIONS: ActionQueue = {
@@ -254,6 +269,13 @@ const chartConfig = {
   },
 } satisfies ChartConfig;
 
+// Mock team members data
+const TEAM_MEMBERS = [
+  { initials: 'JD', name: 'John Doe', email: 'john@company.com', color: 'bg-emerald-500' },
+  { initials: 'AK', name: 'Alice Kim', email: 'alice@company.com', color: 'bg-violet-500' },
+  { initials: 'TS', name: 'Tom Smith', email: 'tom@company.com', color: 'bg-rose-500' },
+];
+
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -263,6 +285,7 @@ export default function Dashboard() {
   const [actionQueue, setActionQueue] = useState<ActionQueue | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedAction, setSelectedAction] = useState<ActionCard | null>(null);
+  const [inviteEmail, setInviteEmail] = useState('');
 
   useEffect(() => {
     if (!user) return;
@@ -377,10 +400,166 @@ export default function Dashboard() {
     );
   }
 
+  // Calculate urgent notification count
+  const urgentCount = (effectiveActionQueue.emergency?.length || 0);
+
   return (
     <div className="space-y-6 min-h-screen">
-      {/* Page Title */}
-      <h1 className="text-2xl font-bold">Dashboard</h1>
+      {/* Page Header with Title and Toolbar */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+
+        {/* Right side toolbar */}
+        <div className="flex items-center gap-3">
+          {/* Team Avatars */}
+          <div className="flex items-center -space-x-2">
+            {TEAM_MEMBERS.map((member) => (
+              <TooltipProvider key={member.initials}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Avatar className={`${member.color} border-2 border-white cursor-pointer hover:scale-110 transition-transform`}>
+                      <AvatarFallback className={`${member.color} text-white text-xs font-semibold`}>
+                        {member.initials}
+                      </AvatarFallback>
+                    </Avatar>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="font-medium">{member.name}</p>
+                    <p className="text-xs text-muted-foreground">{member.email}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ))}
+          </div>
+
+          {/* Invite Button */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 rounded-full border-dashed border-2 border-gray-300 hover:border-gray-400 hover:bg-gray-50"
+              >
+                <Plus className="h-4 w-4 text-gray-500" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80" align="end">
+              <div className="space-y-4">
+                <div>
+                  <h4 className="font-medium text-sm mb-1">Invite team member</h4>
+                  <p className="text-xs text-muted-foreground">Add people to collaborate on this dashboard</p>
+                </div>
+                <div className="flex gap-2">
+                  <Input
+                    type="email"
+                    placeholder="Enter email address"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Button size="sm" className="bg-lime hover:bg-lime/90 text-gunmetal">
+                    <Mail className="h-4 w-4 mr-1" />
+                    Send
+                  </Button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          {/* Notification Bell */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative h-9 w-9 rounded-full hover:bg-gray-100"
+              >
+                <Bell className="h-5 w-5 text-gray-600" />
+                {urgentCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 h-5 w-5 rounded-full bg-tomato text-white text-xs font-bold flex items-center justify-center">
+                    {urgentCount}
+                  </span>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80" align="end">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium text-sm">Notifications</h4>
+                  {urgentCount > 0 && (
+                    <span className="text-xs text-tomato font-medium">{urgentCount} urgent</span>
+                  )}
+                </div>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {recentAlerts.length > 0 ? (
+                    recentAlerts.map((alert) => (
+                      <div
+                        key={alert.id}
+                        className="p-3 rounded-lg bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors"
+                        onClick={() => setSelectedAction(alert)}
+                      >
+                        <div className="flex items-start gap-2">
+                          {alert.urgency === 'emergency' && (
+                            <span className="w-2 h-2 mt-1.5 rounded-full bg-tomato flex-shrink-0" />
+                          )}
+                          {alert.urgency === 'this_week' && (
+                            <span className="w-2 h-2 mt-1.5 rounded-full bg-amber-500 flex-shrink-0" />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gunmetal truncate">{alert.problem_summary}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">{alert.time_remaining} remaining</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground text-center py-4">No notifications</p>
+                  )}
+                </div>
+                {recentAlerts.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full text-sm"
+                    onClick={() => navigate('/actions')}
+                  >
+                    View all notifications
+                    <ArrowRight className="w-4 h-4 ml-1" />
+                  </Button>
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          {/* Share Button */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-9 gap-2 rounded-full px-4 bg-gunmetal text-white hover:bg-gunmetal/90 hover:text-white border-0"
+              >
+                <Upload className="h-4 w-4" />
+                Share
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem className="cursor-pointer">
+                <Link2 className="h-4 w-4 mr-2" />
+                Copy link
+              </DropdownMenuItem>
+              <DropdownMenuItem className="cursor-pointer">
+                <Copy className="h-4 w-4 mr-2" />
+                Duplicate dashboard
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="cursor-pointer">
+                <Mail className="h-4 w-4 mr-2" />
+                Email report
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
 
       {/* Top KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -453,21 +632,8 @@ export default function Dashboard() {
         </NeuroCard>
       </div>
 
-      {/* Recent Alerts */}
-      {recentAlerts.length > 0 && (
-        <NeuroCard>
-          <NeuroCardHeader className="pb-3">
-            <NeuroCardTitle>Recent Alerts</NeuroCardTitle>
-          </NeuroCardHeader>
-          <NeuroCardContent className="pt-0">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {recentAlerts.map((alert) => (
-                <AlertCard key={alert.id} alert={alert} onViewAction={() => setSelectedAction(alert)} />
-              ))}
-            </div>
-          </NeuroCardContent>
-        </NeuroCard>
-      )}
+      {/* Alerts Panel */}
+      <AlertsPanelSection />
 
       {/* 13 Week Forecast Chart */}
       <NeuroCard>

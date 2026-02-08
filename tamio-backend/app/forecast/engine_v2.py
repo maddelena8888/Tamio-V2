@@ -1,21 +1,17 @@
 """
-Forecast Engine V2 - On-the-fly computation with confidence scoring.
+Forecast Engine - On-the-fly computation from ObligationSchedules.
 
-This engine computes forecasts directly from clients and expense buckets,
-eliminating the need for pre-generated cash_events. This ensures the
-forecast is always aligned with the source data.
+This engine computes forecasts from the canonical obligation system:
+- ObligationAgreement: The contract/agreement (WHY)
+- ObligationSchedule: When payments occur (WHEN)
+- PaymentEvent: Actual payments (REALITY)
 
-Key improvements over V1:
-- Computes on-the-fly (no stale data)
+Features:
+- Computes on-the-fly (never stale)
 - Includes confidence scoring based on integration status
-- Single source of truth (clients/buckets tables)
+- Single source of truth: ObligationSchedules
+- Supports scenario modifications (exclusions, deltas, payment delays)
 - Ready for QuickBooks integration
-
-V2.1 Update (Data Architecture Refactor):
-- Added obligation-based computation path (USE_OBLIGATION_FOR_FORECAST feature flag)
-- When enabled, computes forecasts from ObligationSchedules instead of Client/ExpenseBucket
-- Maintains backward compatibility with legacy approach via feature flag
-- Hybrid approach: CashEvents stored for audit, forecasts computed on-the-fly
 """
 from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
@@ -24,6 +20,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
+from sqlalchemy.orm import selectinload
 
 from app.data.clients.models import Client
 from app.data.expenses.models import ExpenseBucket
@@ -37,7 +34,6 @@ from app.integrations.confidence import (
     calculate_forecast_confidence_summary,
     ForecastConfidenceSummary,
 )
-from app.config import settings
 
 
 @dataclass
@@ -582,25 +578,28 @@ def _compute_expense_events(
 
 
 # =============================================================================
-# New Canonical Approach: Compute events from ObligationSchedules
+# Canonical Approach: Compute events from ObligationSchedules
 # =============================================================================
 
 async def _compute_events_from_obligations(
     db: AsyncSession,
     user_id: str,
     start_date: date,
-    end_date: date
+    end_date: date,
+    scenario_context: Optional['ScenarioContext'] = None
 ) -> tuple[List[ForecastEvent], List[tuple], List[tuple]]:
     """
-    Compute forecast events from ObligationSchedules (new canonical approach).
+    Compute forecast events from ObligationSchedules (canonical approach).
 
     This reads from the canonical obligation system rather than Client/ExpenseBucket.
+    Supports scenario modifications (exclusions, amount deltas, payment delays).
 
     Args:
         db: Database session
         user_id: User ID
         start_date: Forecast start date
         end_date: Forecast end date
+        scenario_context: Optional context for scenario modifications
 
     Returns:
         Tuple of (events, client_confidence_data, expense_confidence_data)
@@ -610,9 +609,11 @@ async def _compute_events_from_obligations(
     expense_confidence_data = []
 
     # Query obligation schedules in date range
+    # Use selectinload to eagerly load the obligation relationship (required for async)
     query = (
         select(ObligationSchedule)
         .join(ObligationAgreement)
+        .options(selectinload(ObligationSchedule.obligation))
         .where(
             and_(
                 ObligationAgreement.user_id == user_id,
@@ -639,6 +640,10 @@ async def _compute_events_from_obligations(
 
         # Determine direction and event type based on source entity
         if obligation.client_id:
+            # Check if this client is excluded by scenario
+            if scenario_context and obligation.client_id in scenario_context.excluded_client_ids:
+                continue
+
             direction = "in"
             event_type = "expected_revenue"
             source_type = "client"
@@ -653,6 +658,10 @@ async def _compute_events_from_obligations(
                 reason="No linked client"
             )
         elif obligation.expense_bucket_id:
+            # Check if this expense is excluded by scenario
+            if scenario_context and obligation.expense_bucket_id in scenario_context.excluded_bucket_ids:
+                continue
+
             direction = "out"
             event_type = "expected_expense"
             source_type = "expense"
@@ -681,15 +690,51 @@ async def _compute_events_from_obligations(
         is_recurring = obligation.frequency not in [None, "one_time"]
         recurrence_pattern = _map_obligation_frequency(obligation.frequency)
 
+        # Apply scenario modifications
+        event_date = schedule.due_date
+        event_amount = schedule.estimated_amount
+        event_reason = f"From obligation schedule ({schedule.estimate_source})"
+
+        if scenario_context:
+            # Apply payment delay for clients
+            if obligation.client_id and obligation.client_id in scenario_context.client_payment_delays:
+                delay_days = scenario_context.client_payment_delays[obligation.client_id]
+                if scenario_context.effective_date is None or event_date >= scenario_context.effective_date:
+                    event_date = event_date + timedelta(days=delay_days)
+                    schedule_confidence = ConfidenceLevel.MEDIUM
+                    event_reason = f"Payment delayed by {delay_days} days (scenario)"
+
+            # Apply amount delta for clients
+            if obligation.client_id and obligation.client_id in scenario_context.client_amount_deltas:
+                delta = scenario_context.client_amount_deltas[obligation.client_id]
+                if scenario_context.effective_date is None or event_date >= scenario_context.effective_date:
+                    event_amount = event_amount + delta
+                    if event_amount <= 0:
+                        continue  # Skip negative amounts
+                    event_reason = f"Amount modified by ${delta} (scenario)"
+
+            # Apply amount delta for expenses
+            if obligation.expense_bucket_id and obligation.expense_bucket_id in scenario_context.expense_amount_deltas:
+                delta = scenario_context.expense_amount_deltas[obligation.expense_bucket_id]
+                if scenario_context.effective_date is None or event_date >= scenario_context.effective_date:
+                    event_amount = event_amount + delta
+                    if event_amount <= 0:
+                        continue  # Skip negative amounts
+                    event_reason = f"Amount modified by ${delta} (scenario)"
+
+        # Check if modified date is still in range
+        if not (start_date <= event_date <= end_date):
+            continue
+
         event = ForecastEvent(
-            id=f"obligation_{obligation.id}_{schedule.id}_{schedule.due_date.isoformat()}",
-            date=schedule.due_date,
-            amount=schedule.estimated_amount,
+            id=f"obligation_{obligation.id}_{schedule.id}_{event_date.isoformat()}",
+            date=event_date,
+            amount=event_amount,
             direction=direction,
             event_type=event_type,
             category=obligation.category,
             confidence=schedule_confidence,
-            confidence_reason=f"From obligation schedule ({schedule.estimate_source})",
+            confidence_reason=event_reason,
             source_id=obligation.id,
             source_name=source_name,
             source_type=source_type,
@@ -732,11 +777,34 @@ async def _compute_events_from_obligations(
         )
         events.append(event)
 
+    # Add scenario-specific revenue (e.g., client_gain scenario)
+    if scenario_context and scenario_context.added_revenue:
+        for revenue in scenario_context.added_revenue:
+            scenario_events = _compute_added_revenue_events(
+                user_id, revenue, start_date, end_date
+            )
+            events.extend(scenario_events)
+
+    # Add scenario-specific expenses (e.g., hiring, contractor_gain scenario)
+    if scenario_context and scenario_context.added_expenses:
+        for expense in scenario_context.added_expenses:
+            scenario_events = _compute_added_expense_events(
+                user_id, expense, start_date, end_date
+            )
+            events.extend(scenario_events)
+
     # Build confidence data for summary calculation
     # Group by original source (client/expense)
-    for obligation_id, schedules in obligation_schedules.items():
-        total_amount = sum(s.estimated_amount for s in schedules)
-        obligation = schedules[0].obligation
+    for obligation_id, sched_list in obligation_schedules.items():
+        total_amount = sum(s.estimated_amount for s in sched_list)
+        obligation = sched_list[0].obligation
+
+        # Skip excluded entities when building confidence data
+        if scenario_context:
+            if obligation.client_id and obligation.client_id in scenario_context.excluded_client_ids:
+                continue
+            if obligation.expense_bucket_id and obligation.expense_bucket_id in scenario_context.excluded_bucket_ids:
+                continue
 
         if obligation.client_id:
             client_query = select(Client).where(Client.id == obligation.client_id)
@@ -1046,34 +1114,27 @@ async def calculate_forecast_v2(
     db: AsyncSession,
     user_id: str,
     weeks: int = 13,
-    use_obligations: Optional[bool] = None,
     scenario_context: Optional[ScenarioContext] = None
 ) -> Dict[str, Any]:
     """
-    Calculate a forecast by computing events on-the-fly from source data.
+    Calculate a forecast from ObligationSchedules.
 
-    This is the V2 forecast engine that:
-    1. Reads directly from clients and expense_buckets tables (legacy)
-       OR from ObligationSchedules (new canonical approach)
+    This is the canonical forecast engine that:
+    1. Reads from ObligationSchedules (the source of truth)
     2. Computes events on-the-fly (never stale)
     3. Includes confidence scoring based on integration status
-    4. Returns comprehensive confidence breakdown
+    4. Supports scenario modifications (exclusions, deltas, payment delays)
+    5. Returns comprehensive confidence breakdown
 
     Args:
         db: Database session
         user_id: User ID
         weeks: Number of weeks to forecast (default 13)
-        use_obligations: If True, use obligation-based computation.
-                        If None, uses settings.USE_OBLIGATION_FOR_FORECAST.
         scenario_context: Optional context for scenario modifications (exclusions, deltas, etc.)
 
     Returns:
         Dictionary containing forecast data with confidence metrics
     """
-    # Determine which computation path to use
-    if use_obligations is None:
-        use_obligations = settings.USE_OBLIGATION_FOR_FORECAST
-
     # Get starting cash
     result = await db.execute(
         select(func.sum(CashAccount.balance))
@@ -1085,82 +1146,10 @@ async def calculate_forecast_v2(
     forecast_start = date.today()
     forecast_end = forecast_start + timedelta(weeks=weeks)
 
-    # Compute events based on selected approach
-    all_events: List[ForecastEvent] = []
-    client_confidence_data = []
-    expense_confidence_data = []
-
-    if use_obligations:
-        # New canonical approach: compute from ObligationSchedules
-        all_events, client_confidence_data, expense_confidence_data = await _compute_events_from_obligations(
-            db, user_id, forecast_start, forecast_end
-        )
-    else:
-        # Legacy approach: compute from Client/ExpenseBucket tables
-
-        # Get all active clients
-        result = await db.execute(
-            select(Client)
-            .where(Client.user_id == user_id)
-            .where(Client.status == "active")
-        )
-        clients = result.scalars().all()
-
-        # Get all expense buckets
-        result = await db.execute(
-            select(ExpenseBucket)
-            .where(ExpenseBucket.user_id == user_id)
-        )
-        buckets = result.scalars().all()
-
-        # Process clients (with scenario context filtering)
-        for client in clients:
-            # Skip excluded clients (e.g., client_loss scenario)
-            if scenario_context and client.id in scenario_context.excluded_client_ids:
-                continue
-
-            confidence = calculate_client_confidence(client)
-            events = _compute_client_events(
-                client, forecast_start, forecast_end, confidence,
-                scenario_context=scenario_context
-            )
-            all_events.extend(events)
-
-            # Calculate monthly amount for confidence weighting
-            config = client.billing_config or {}
-            monthly_amount = Decimal(str(config.get("amount", 0)))
-            client_confidence_data.append((client, confidence, monthly_amount))
-
-        # Process expenses (with scenario context filtering)
-        for bucket in buckets:
-            # Skip excluded buckets (e.g., contractor_loss scenario)
-            if scenario_context and bucket.id in scenario_context.excluded_bucket_ids:
-                continue
-
-            confidence = calculate_expense_confidence(bucket)
-            events = _compute_expense_events(
-                bucket, forecast_start, forecast_end, confidence,
-                scenario_context=scenario_context
-            )
-            all_events.extend(events)
-
-            expense_confidence_data.append((bucket, confidence, bucket.monthly_amount or Decimal("0")))
-
-        # Add scenario-specific revenue (e.g., client_gain scenario)
-        if scenario_context and scenario_context.added_revenue:
-            for revenue in scenario_context.added_revenue:
-                events = _compute_added_revenue_events(
-                    user_id, revenue, forecast_start, forecast_end
-                )
-                all_events.extend(events)
-
-        # Add scenario-specific expenses (e.g., hiring, contractor_gain scenario)
-        if scenario_context and scenario_context.added_expenses:
-            for expense in scenario_context.added_expenses:
-                events = _compute_added_expense_events(
-                    user_id, expense, forecast_start, forecast_end
-                )
-                all_events.extend(events)
+    # Compute events from ObligationSchedules (canonical source)
+    all_events, client_confidence_data, expense_confidence_data = await _compute_events_from_obligations(
+        db, user_id, forecast_start, forecast_end, scenario_context
+    )
 
     # Sort events by date
     all_events.sort(key=lambda e: e.date)

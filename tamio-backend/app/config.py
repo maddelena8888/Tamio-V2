@@ -51,18 +51,14 @@ class Settings(BaseSettings):
     SLACK_DEFAULT_CHANNEL: str = "#treasury-alerts"
 
     # ==========================================================================
-    # Feature Flags for Data Architecture Transition
+    # Rate Limiting
     # ==========================================================================
-    # Phase 1: Create obligations from clients/expenses (default: True)
-    USE_OBLIGATION_SYSTEM: bool = True
+    RATE_LIMIT_DEFAULT: str = "100/minute"  # General API endpoints
+    RATE_LIMIT_TAMI: str = "20/minute"       # Claude/TAMI calls (expensive)
+    RATE_LIMIT_XERO: str = "30/minute"       # Xero API calls
 
-    # Phase 2: Use obligations for forecast computation (default: False)
-    # When True, forecast engine reads from ObligationSchedule instead of Client/ExpenseBucket
-    USE_OBLIGATION_FOR_FORECAST: bool = False
-
-    # Phase 3: Stop generating legacy CashEvents (default: False)
-    # When True, only ObligationSchedule-based events are used
-    DEPRECATE_DIRECT_CASH_EVENTS: bool = False
+    # Sentry (error tracking)
+    SENTRY_DSN: str = ""
 
     # CORS
     @property

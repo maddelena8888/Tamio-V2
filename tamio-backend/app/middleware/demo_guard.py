@@ -26,7 +26,14 @@ ALLOWED_POST_ENDPOINTS = {
     "/api/tami/chat",
     "/api/tami/chat/stream",
     "/api/scenarios/evaluate/base",
+    # Scenario creation/build (needed for what-if modeling)
+    "/api/scenarios/scenarios",
 }
+
+# POST endpoint prefixes allowed for demo accounts (matches paths like /api/scenarios/scenarios/{id}/build)
+ALLOWED_POST_PREFIXES = (
+    "/api/scenarios/scenarios/",
+)
 
 
 class DemoGuardMiddleware(BaseHTTPMiddleware):
@@ -54,6 +61,10 @@ class DemoGuardMiddleware(BaseHTTPMiddleware):
         # Check if this is an allowed POST endpoint
         path = request.url.path
         if path in ALLOWED_POST_ENDPOINTS:
+            return await call_next(request)
+
+        # Check allowed POST prefixes (e.g. scenario build/save operations)
+        if request.method == "POST" and path.startswith(ALLOWED_POST_PREFIXES):
             return await call_next(request)
 
         # Check for allowed endpoint prefixes (like /api/scenarios/*/forecast which is read-only)

@@ -19,9 +19,12 @@ import {
 import { ComposedChart, Area, XAxis, YAxis, CartesianGrid, Line } from 'recharts';
 import { TrendingUp, Info } from 'lucide-react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
-import { ScenarioBar, TransactionTable } from '@/components/forecast';
+import { SuggestedScenariosSection, ManualScenarioModal, TransactionTable } from '@/components/forecast';
+import { ForecastConfidenceBadge } from '@/components/reconciliation';
+import type { ManualScenarioParams } from '@/components/forecast';
 import { getForecast, getTransactions, createCustomScenario } from '@/lib/api/forecast';
-import { getRules } from '@/lib/api/scenarios';
+import { getRules, getScenarioSuggestions, createScenario, buildScenario } from '@/lib/api/scenarios';
+import { getForecastImpact } from '@/lib/api/reconciliation';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import type {
@@ -29,6 +32,8 @@ import type {
   TransactionItem,
   FinancialRule,
   ScenarioType,
+  ScenarioSuggestion,
+  ForecastImpactSummary,
 } from '@/lib/api/types';
 
 // ============================================================================
@@ -91,10 +96,15 @@ export default function Forecast() {
   const [outflows, setOutflows] = useState<TransactionItem[]>([]);
   const [rules, setRules] = useState<FinancialRule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [forecastImpact, setForecastImpact] = useState<ForecastImpactSummary | null>(null);
 
   // Scenario state
   const [excludedTransactions, setExcludedTransactions] = useState<Set<string>>(new Set());
   const [_customScenarioId, setCustomScenarioId] = useState<string | null>(null);
+
+  // Suggested scenarios state
+  const [suggestions, setSuggestions] = useState<ScenarioSuggestion[]>([]);
+  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
 
   // URL-based scenario (from ScenarioBuilder)
   const urlScenario = useMemo(() => {
@@ -169,17 +179,25 @@ export default function Forecast() {
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        const [forecastData, inflowsData, outflowsData, rulesData] = await Promise.all([
+        const [forecastData, inflowsData, outflowsData, rulesData, suggestionsData, impactData] = await Promise.all([
           getForecast(user.id, weeks).catch(() => null),
           getTransactions(user.id, 'inflows', timeRange).catch(() => ({ transactions: [] })),
           getTransactions(user.id, 'outflows', timeRange).catch(() => ({ transactions: [] })),
           getRules(user.id).catch(() => []),
+          getScenarioSuggestions(user.id).catch((err) => {
+            console.error('Failed to fetch suggestions:', err);
+            return { suggestions: [] };
+          }),
+          getForecastImpact().catch(() => null),
         ]);
 
+        console.log('Suggestions API response:', suggestionsData);
         setBaseForecast(forecastData);
         setInflows(inflowsData.transactions || []);
         setOutflows(outflowsData.transactions || []);
         setRules(rulesData);
+        setSuggestions(suggestionsData.suggestions || []);
+        setForecastImpact(impactData);
       } catch (error) {
         console.error('Failed to fetch forecast data:', error);
         toast.error('Failed to load forecast data');
@@ -308,6 +326,74 @@ export default function Forecast() {
     setSearchParams(newParams);
     toast.success('Scenario updated', { duration: 1500 });
   }, [searchParams, setSearchParams]);
+
+  // Handle running a suggested scenario
+  const handleRunSuggested = useCallback(async (suggestion: ScenarioSuggestion) => {
+    if (!user) return;
+
+    try {
+      // Create scenario from suggestion
+      const scenario = await createScenario({
+        user_id: user.id,
+        name: suggestion.name,
+        scenario_type: suggestion.scenario_type,
+        entry_path: 'tamio_suggested',
+        scope_config: (suggestion.prefill_params?.scope_config as Record<string, unknown>) || {},
+        parameters: suggestion.prefill_params || {},
+      });
+
+      // Build the scenario
+      await buildScenario(scenario.id);
+
+      // Apply to chart via URL params (triggers urlScenario recalculation)
+      const newParams = new URLSearchParams();
+      newParams.set('scenarioId', scenario.id);
+      newParams.set('scenarioType', suggestion.scenario_type);
+      newParams.set('name', suggestion.name);
+      setSearchParams(newParams);
+
+      toast.success(`Scenario "${suggestion.name}" applied`, { duration: 2000 });
+    } catch (error) {
+      console.error('Failed to run suggested scenario:', error);
+      toast.error('Failed to apply scenario');
+    }
+  }, [user, setSearchParams]);
+
+  // Handle building a manual scenario
+  const handleManualBuild = useCallback(async (params: ManualScenarioParams) => {
+    if (!user) return;
+
+    try {
+      // Create scenario from manual params
+      const scenario = await createScenario({
+        user_id: user.id,
+        name: params.name,
+        scenario_type: params.type,
+        entry_path: 'user_defined',
+        scope_config: {},
+        parameters: {
+          effective_date: params.effectiveDate,
+          ...params.params,
+        },
+      });
+
+      // Build the scenario
+      await buildScenario(scenario.id);
+
+      // Apply to chart via URL params
+      const newParams = new URLSearchParams();
+      newParams.set('scenarioId', scenario.id);
+      newParams.set('scenarioType', params.type);
+      newParams.set('name', params.name);
+      setSearchParams(newParams);
+
+      setIsManualModalOpen(false);
+      toast.success(`Scenario "${params.name}" applied`, { duration: 2000 });
+    } catch (error) {
+      console.error('Failed to build manual scenario:', error);
+      toast.error('Failed to create scenario');
+    }
+  }, [user, setSearchParams]);
 
   // Calculate metrics from forecast
   const hasData = baseForecast && baseForecast.weeks && baseForecast.weeks.length > 0;
@@ -454,120 +540,36 @@ export default function Forecast() {
 
   return (
     <div className="space-y-8">
-      {/* Scenario Bar */}
-      <ScenarioBar
-        scenarioActive={excludedTransactions.size > 0 || !!urlScenario?.active}
-        scenarioName={urlScenario?.name || (excludedTransactions.size > 0 ? 'Custom adjustments' : null)}
-        impactStatement={urlScenario?.impact || (excludedTransactions.size > 0
-          ? `${excludedTransactions.size} transaction${excludedTransactions.size > 1 ? 's' : ''} excluded`
-          : null
-        )}
-        scenarioType={urlScenario?.type as ScenarioType | undefined}
-        scenarioParams={urlScenario?.params}
-        onParamChange={handleScenarioParamChange}
-        onClearScenario={() => {
-          // Clear URL params and local state
-          setSearchParams({});
-          handleClearScenario();
-        }}
+      {/* Suggested Scenarios Section */}
+      <SuggestedScenariosSection
+        suggestions={suggestions}
+        isLoading={isLoading}
+        onRunSuggested={handleRunSuggested}
+        onAddNewScenario={() => setIsManualModalOpen(true)}
         onShare={() => toast.info('Share functionality coming soon')}
-        onSecondOrderEffects={() => toast.info('Second order effects coming soon')}
       />
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        {/* Current Position */}
-        <NeuroCard className="p-6">
-          <div className="text-center">
-            <div className="text-4xl font-bold text-gunmetal">
-              {formatCompactCurrency(cashPosition)}
-            </div>
-            <div className="text-sm font-medium text-muted-foreground mt-2">Current Position</div>
-            <div className="flex items-center justify-center gap-1 mt-2">
-              <TrendingUp className="h-3.5 w-3.5 text-lime-dark" />
-              <span className="text-xs font-medium text-lime-dark">+5.9% (30D)</span>
-            </div>
-          </div>
-        </NeuroCard>
-
-        {/* Runway */}
-        <NeuroCard className="p-6">
-          <div className="text-center">
-            <div className={cn(
-              'text-4xl font-bold',
-              !hasData ? 'text-gunmetal' :
-                (baseForecast?.summary?.runway_weeks || 0) >= 12 ? 'text-lime-dark' :
-                (baseForecast?.summary?.runway_weeks || 0) >= 6 ? 'text-amber-500' : 'text-tomato'
-            )}>
-              {!hasData ? '--' : `${baseForecast?.summary?.runway_weeks || 0}w`}
-            </div>
-            <div className="text-sm font-medium text-muted-foreground mt-2">Runway</div>
-            <div className={cn(
-              'text-xs font-medium mt-2',
-              !hasData ? 'text-muted-foreground' :
-                (baseForecast?.summary?.runway_weeks || 0) >= 12 ? 'text-lime-dark' :
-                (baseForecast?.summary?.runway_weeks || 0) >= 6 ? 'text-amber-500' : 'text-tomato'
-            )}>
-              {!hasData ? 'No forecast data' :
-                (baseForecast?.summary?.runway_weeks || 0) >= 12 ? 'Healthy runway' :
-                (baseForecast?.summary?.runway_weeks || 0) >= 6 ? 'Monitor closely' : 'Critical'}
-            </div>
-          </div>
-        </NeuroCard>
-
-        {/* Buffer Status */}
-        <NeuroCard className="p-6">
-          <div className="text-center">
-            {(() => {
-              // Derive months covered from runway weeks (consistent with runway calculation)
-              const runwayWeeks = baseForecast?.summary?.runway_weeks || 0;
-              const monthsCovered = runwayWeeks / 4.33; // Convert weeks to months
-              const isSafe = monthsCovered >= 3;
-              const isCritical = monthsCovered >= 1 && monthsCovered < 3;
-              // Risk = monthsCovered < 1
-
-              const statusLabel = isSafe ? 'Safe' : isCritical ? 'Critical' : 'At Risk';
-              const statusColor = isSafe ? 'text-lime-dark' : isCritical ? 'text-amber-500' : 'text-tomato';
-
-              return (
-                <>
-                  <div className={cn(
-                    'text-4xl font-bold',
-                    !hasData ? 'text-gunmetal' : statusColor
-                  )}>
-                    {!hasData ? '--' : statusLabel}
-                  </div>
-                  <div className="flex items-center justify-center gap-1.5 mt-2">
-                    <span className="text-sm font-medium text-muted-foreground">Buffer Status</span>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-[240px] text-left">
-                        <p className="font-medium mb-1">Fixed obligations coverage:</p>
-                        <p><span className="text-lime-400">Safe</span> = 3+ months covered</p>
-                        <p><span className="text-amber-400">Critical</span> = 1-3 months covered</p>
-                        <p><span className="text-red-400">At Risk</span> = less than 1 month</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <div className={cn(
-                    'text-xs font-medium mt-2',
-                    !hasData ? 'text-muted-foreground' : statusColor
-                  )}>
-                    {!hasData ? 'No forecast data' : `${monthsCovered.toFixed(1).replace(/\.0$/, '')}mo of obligations`}
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        </NeuroCard>
-      </div>
+      {/* Manual Scenario Modal */}
+      <ManualScenarioModal
+        isOpen={isManualModalOpen}
+        onClose={() => setIsManualModalOpen(false)}
+        onBuild={handleManualBuild}
+      />
 
       {/* Forecast Chart */}
       <NeuroCard>
         <NeuroCardHeader className="pb-4 flex flex-row items-center justify-between">
-          <NeuroCardTitle>Forecast</NeuroCardTitle>
+          <div className="flex items-center gap-4">
+            <NeuroCardTitle>Forecast</NeuroCardTitle>
+            {forecastImpact && (
+              <ForecastConfidenceBadge
+                score={forecastImpact.accuracy_score}
+                unreconciledCount={forecastImpact.unreconciled_count}
+                linkToLedger={true}
+                size="sm"
+              />
+            )}
+          </div>
           <Select value={timeRange} onValueChange={handleTimeRangeChange}>
             <SelectTrigger className="w-[120px] bg-white/80">
               <SelectValue />

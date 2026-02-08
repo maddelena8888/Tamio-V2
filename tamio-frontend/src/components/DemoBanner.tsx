@@ -8,9 +8,9 @@ export function DemoBanner() {
   if (!isDemo) return null;
 
   return (
-    <div className="bg-lime text-gunmetal px-4 py-2.5 text-center text-sm font-medium sticky top-0 z-50">
-      <div className="flex items-center justify-center gap-2 flex-wrap">
-        <AlertCircle className="h-4 w-4" />
+    <div className="bg-lime text-gunmetal px-3 py-1.5 text-center text-xs font-medium sticky top-0 z-50">
+      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+        <AlertCircle className="h-3.5 w-3.5" />
         <span>You're viewing a demo account with sample data</span>
         <span className="hidden sm:inline">-</span>
         <Link

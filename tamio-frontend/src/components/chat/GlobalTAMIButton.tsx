@@ -2,15 +2,22 @@
  * GlobalTAMIButton - Floating Action Button for TAMI Chatbot
  *
  * Fixed position button in the bottom-right corner that opens the global TAMI drawer.
- * Appears on all protected pages via MainLayout.
+ * Appears on all protected pages via MainLayout (except Home which has its own AI input).
  */
 
 import { Bot } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 import { useTAMI } from '@/contexts/TAMIContext';
 import { cn } from '@/lib/utils';
 
 export function GlobalTAMIButton() {
   const { toggle, isOpen } = useTAMI();
+  const location = useLocation();
+
+  // Hide on home page - it has its own AI input in the bottom bar
+  if (location.pathname === '/home') {
+    return null;
+  }
 
   return (
     <button

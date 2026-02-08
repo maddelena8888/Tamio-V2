@@ -9,10 +9,132 @@ import secrets
 import logging
 
 from app.scenarios import models
-from app.data.models import CashEvent, Client, ExpenseBucket, User, CashAccount
+from app.data.models import Client, ExpenseBucket, User, CashAccount
+from app.data.obligations.models import ObligationSchedule, ObligationAgreement
 from app.forecast.engine_v2 import calculate_13_week_forecast, ScenarioContext
 
+# NOTE: CashEvent has been removed in Phase 3 cleanup.
+# Scenario queries that previously used CashEvent now use ObligationSchedule.
+# The helper functions below provide compatibility for scenario event building.
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Compatibility helpers for ObligationSchedule queries (replaces CashEvent)
+# =============================================================================
+
+class ScheduleEventAdapter:
+    """Adapter to provide CashEvent-like interface from ObligationSchedule."""
+
+    def __init__(self, schedule: ObligationSchedule, obligation: ObligationAgreement):
+        self.id = schedule.id
+        self.user_id = obligation.user_id
+        self.date = schedule.due_date
+        self.amount = schedule.estimated_amount
+        self.direction = "in" if obligation.client_id else "out"
+        self.event_type = "expected_revenue" if obligation.client_id else "expected_expense"
+        self.category = obligation.category
+        self.confidence = schedule.confidence or "medium"
+        self.confidence_reason = schedule.estimate_source
+        self.is_recurring = obligation.frequency not in [None, "one_time"]
+        self.recurrence_pattern = obligation.frequency
+        self.client_id = obligation.client_id
+        self.bucket_id = obligation.expense_bucket_id
+
+
+async def _get_client_schedules(
+    db: AsyncSession,
+    client_id: str,
+    from_date: Optional[date] = None
+) -> List[ScheduleEventAdapter]:
+    """Get scheduled events for a client (replaces CashEvent query)."""
+    if from_date is None:
+        from_date = date.today()
+
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(ObligationSchedule)
+        .join(ObligationAgreement)
+        .options(selectinload(ObligationSchedule.obligation))
+        .where(
+            ObligationAgreement.client_id == client_id,
+            ObligationSchedule.due_date >= from_date,
+            ObligationSchedule.status.in_(["scheduled", "due"])
+        )
+        .order_by(ObligationSchedule.due_date)
+    )
+    schedules = result.scalars().all()
+    return [ScheduleEventAdapter(s, s.obligation) for s in schedules]
+
+
+async def _get_expense_schedules(
+    db: AsyncSession,
+    bucket_id: str,
+    from_date: Optional[date] = None,
+    category: Optional[str] = None
+) -> List[ScheduleEventAdapter]:
+    """Get scheduled events for an expense bucket (replaces CashEvent query)."""
+    if from_date is None:
+        from_date = date.today()
+
+    from sqlalchemy.orm import selectinload
+    query = (
+        select(ObligationSchedule)
+        .join(ObligationAgreement)
+        .options(selectinload(ObligationSchedule.obligation))
+        .where(
+            ObligationAgreement.expense_bucket_id == bucket_id,
+            ObligationSchedule.due_date >= from_date,
+            ObligationSchedule.status.in_(["scheduled", "due"])
+        )
+    )
+    if category:
+        query = query.where(ObligationAgreement.category == category)
+    query = query.order_by(ObligationSchedule.due_date)
+
+    result = await db.execute(query)
+    schedules = result.scalars().all()
+    return [ScheduleEventAdapter(s, s.obligation) for s in schedules]
+
+
+async def _get_user_schedules(
+    db: AsyncSession,
+    user_id: str,
+    from_date: Optional[date] = None
+) -> List[ScheduleEventAdapter]:
+    """Get all scheduled events for a user (replaces CashEvent query)."""
+    if from_date is None:
+        from_date = date.today()
+
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(ObligationSchedule)
+        .join(ObligationAgreement)
+        .options(selectinload(ObligationSchedule.obligation))
+        .where(
+            ObligationAgreement.user_id == user_id,
+            ObligationSchedule.due_date >= from_date,
+            ObligationSchedule.status.in_(["scheduled", "due"])
+        )
+        .order_by(ObligationSchedule.due_date)
+    )
+    schedules = result.scalars().all()
+    return [ScheduleEventAdapter(s, s.obligation) for s in schedules]
+
+
+async def _get_schedule_by_id(db: AsyncSession, schedule_id: str) -> Optional[ScheduleEventAdapter]:
+    """Get a single schedule by ID (replaces CashEvent.id lookup)."""
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(ObligationSchedule)
+        .options(selectinload(ObligationSchedule.obligation))
+        .where(ObligationSchedule.id == schedule_id)
+    )
+    schedule = result.scalar_one_or_none()
+    if schedule:
+        return ScheduleEventAdapter(schedule, schedule.obligation)
+    return None
 
 
 async def build_scenario_layer(
@@ -154,22 +276,12 @@ async def _build_payment_delay(
     # If no specific event_ids provided, find all future receivables for the client
     if not event_ids and scope.get("client_id"):
         client_id = scope.get("client_id")
-        result = await db.execute(
-            select(CashEvent).where(
-                CashEvent.client_id == client_id,
-                CashEvent.date >= date.today(),
-                CashEvent.direction == "in"
-            ).order_by(CashEvent.date)
-        )
-        events = result.scalars().all()
+        events = await _get_client_schedules(db, client_id, date.today())
     else:
-        # Use specific event_ids
+        # Use specific event_ids (schedule IDs)
         events = []
         for event_id in event_ids:
-            result = await db.execute(
-                select(CashEvent).where(CashEvent.id == event_id)
-            )
-            event = result.scalar_one_or_none()
+            event = await _get_schedule_by_id(db, event_id)
             if event:
                 events.append(event)
 
@@ -226,20 +338,13 @@ async def _build_client_loss(
     else:
         effective_date = date.today()
 
-    # Get all future cash events for this client
-    result = await db.execute(
-        select(CashEvent).where(
-            CashEvent.client_id == client_id,
-            CashEvent.date >= effective_date,
-            CashEvent.direction == "in"
-        )
-    )
-    events = result.scalars().all()
+    # Get all future scheduled events for this client
+    events = await _get_client_schedules(db, client_id, effective_date)
 
     for event in events:
         scenario_event = models.ScenarioEvent(
             scenario_id=scenario.id,
-            original_event_id=event.id,
+            original_event_id=event.id,  # Now references schedule ID
             operation="delete",
             event_data={"id": event.id, "deleted": True},
             layer_attribution=scenario.name,
@@ -323,15 +428,8 @@ async def _build_client_change(
     delta_amount = Decimal(str(params.get("delta_amount", 0)))
     effective_date = date.fromisoformat(params.get("effective_date"))
 
-    # Get future events for this client
-    result = await db.execute(
-        select(CashEvent).where(
-            CashEvent.client_id == client_id,
-            CashEvent.date >= effective_date,
-            CashEvent.direction == "in"
-        )
-    )
-    events = result.scalars().all()
+    # Get future scheduled events for this client
+    events = await _get_client_schedules(db, client_id, effective_date)
 
     for event in events:
         new_amount = event.amount + delta_amount
@@ -465,14 +563,7 @@ async def _build_firing(
 
     # Delete future payroll events
     if bucket_id:
-        result = await db.execute(
-            select(CashEvent).where(
-                CashEvent.bucket_id == bucket_id,
-                CashEvent.date >= end_date,
-                CashEvent.category == "payroll"
-            )
-        )
-        events = result.scalars().all()
+        events = await _get_expense_schedules(db, bucket_id, end_date, category="payroll")
 
         for event in events:
             scenario_events.append(models.ScenarioEvent(
@@ -585,14 +676,7 @@ async def _build_contractor_change(
         # Remove contractor expenses - check both scope_config and parameters for bucket_id
         bucket_id = scenario.scope_config.get("bucket_id") or params.get("bucket_id")
         if bucket_id:
-            result = await db.execute(
-                select(CashEvent).where(
-                    CashEvent.bucket_id == bucket_id,
-                    CashEvent.date >= start_or_end_date,
-                    CashEvent.category == "contractors"
-                )
-            )
-            events = result.scalars().all()
+            events = await _get_expense_schedules(db, bucket_id, start_or_end_date, category="contractors")
 
             for event in events:
                 scenario_events.append(models.ScenarioEvent(
@@ -733,13 +817,7 @@ async def _build_expense_change(
         # Decrease/remove expense (would need bucket_id)
         bucket_id = scenario.scope_config.get("bucket_id")
         if bucket_id:
-            result = await db.execute(
-                select(CashEvent).where(
-                    CashEvent.bucket_id == bucket_id,
-                    CashEvent.date >= effective_date
-                )
-            )
-            events = result.scalars().all()
+            events = await _get_expense_schedules(db, bucket_id, effective_date)
 
             for event in events:
                 # Could modify to reduce or delete entirely
@@ -787,14 +865,7 @@ async def _build_payment_delay_out(
 
     # If bucket_id provided, find all future outgoing events for that expense bucket
     if not event_ids and bucket_id:
-        result = await db.execute(
-            select(CashEvent).where(
-                CashEvent.bucket_id == bucket_id,
-                CashEvent.date >= date.today(),
-                CashEvent.direction == "out"
-            ).order_by(CashEvent.date)
-        )
-        events = result.scalars().all()
+        events = await _get_expense_schedules(db, bucket_id, date.today())
 
         for event in events:
             # Shift payment date forward
@@ -878,10 +949,7 @@ async def _build_payment_delay_out(
         return scenario_events
 
     for event_id in event_ids:
-        result = await db.execute(
-            select(CashEvent).where(CashEvent.id == event_id)
-        )
-        event = result.scalar_one_or_none()
+        event = await _get_schedule_by_id(db, event_id)
         if not event or event.direction != "out":
             continue
 
@@ -1193,14 +1261,8 @@ async def _apply_scenario_layer(
 
     logger.info(f"Applying scenario layer with {len(scenario_events)} scenario events")
 
-    # Get all base events
-    result = await db.execute(
-        select(CashEvent).where(
-            CashEvent.user_id == user_id,
-            CashEvent.date >= date.today()
-        ).order_by(CashEvent.date)
-    )
-    base_events = result.scalars().all()
+    # Get all base events (now using schedule adapter)
+    base_events = await _get_user_schedules(db, user_id, date.today())
 
     logger.info(f"Found {len(base_events)} base events")
 

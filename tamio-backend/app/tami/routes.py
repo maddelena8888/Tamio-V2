@@ -9,7 +9,7 @@ Endpoints:
 - GET /scenario/suggestions - Get scenario suggestions
 - POST /plan/goal - Build goal scenarios
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional
@@ -17,6 +17,8 @@ import json
 
 from app.database import get_db
 from app.tami import schemas, orchestrator
+from app.middleware import limiter
+from app.config import settings
 
 
 router = APIRouter()
@@ -27,8 +29,10 @@ router = APIRouter()
 # ============================================================================
 
 @router.post("/chat", response_model=schemas.ChatResponse)
+@limiter.limit(settings.RATE_LIMIT_TAMI)
 async def chat_with_tami(
-    request: schemas.ChatRequest,
+    request: Request,
+    chat_request: schemas.ChatRequest,
     session_id: Optional[str] = Query(None, description="Optional conversation session ID for continuity"),
     db: AsyncSession = Depends(get_db)
 ):
@@ -49,7 +53,7 @@ async def chat_with_tami(
     - context_summary: Includes session_id for conversation continuity
     """
     try:
-        response = await orchestrator.chat(db, request, session_id=session_id)
+        response = await orchestrator.chat(db, chat_request, session_id=session_id)
         return response
     except Exception as e:
         raise HTTPException(
@@ -59,8 +63,10 @@ async def chat_with_tami(
 
 
 @router.post("/chat/stream")
+@limiter.limit(settings.RATE_LIMIT_TAMI)
 async def chat_with_tami_streaming(
-    request: schemas.ChatRequest,
+    request: Request,
+    chat_request: schemas.ChatRequest,
     session_id: Optional[str] = Query(None, description="Optional conversation session ID"),
     db: AsyncSession = Depends(get_db)
 ):
@@ -77,7 +83,7 @@ async def chat_with_tami_streaming(
     """
     async def generate_stream():
         try:
-            async for event in orchestrator.chat_streaming(db, request, session_id=session_id):
+            async for event in orchestrator.chat_streaming(db, chat_request, session_id=session_id):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"

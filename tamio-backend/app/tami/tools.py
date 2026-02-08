@@ -22,6 +22,12 @@ from app.forecast.engine_v2 import calculate_forecast_v2 as calculate_13_week_fo
 from app.scenarios.pipeline.dependencies import get_suggested_scenarios as get_dependent_suggestions
 from app.scenarios.pipeline.types import ScenarioTypeEnum
 from sqlalchemy import select
+from datetime import date
+from decimal import Decimal
+
+from app.data.expenses.models import ExpenseBucket
+from app.data.obligations.models import ObligationAgreement, ObligationSchedule
+from app.data.clients.models import Client
 
 
 # ============================================================================
@@ -174,6 +180,23 @@ TOOL_SCHEMAS = [
                 "required": ["goal"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_payroll_safety",
+            "description": "Check whether upcoming payroll can be covered by confirmed cash and high-confidence inflows only. Use when the user asks about payroll coverage, making payroll, or payroll safety.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "weeks_ahead": {
+                        "type": "integer",
+                        "description": "Number of weeks ahead to check (default 4, max 13)"
+                    }
+                },
+                "required": []
+            }
+        }
     }
 ]
 
@@ -215,6 +238,8 @@ async def dispatch_tool(
         return await _get_suggestions(db, user_id, tool_args)
     elif tool_name == "plan_build_goal_scenarios":
         return await _build_goal_scenarios(db, user_id, tool_args)
+    elif tool_name == "check_payroll_safety":
+        return await _check_payroll_safety(db, user_id, tool_args)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -497,4 +522,258 @@ async def _build_goal_scenarios(
         },
         "suggested_scenarios": suggested_scenarios,
         "constraints_applied": constraints
+    }
+
+
+# ============================================================================
+# OPERATIONAL TOOLS
+# ============================================================================
+
+async def _compute_payroll_coverage(
+    db: AsyncSession,
+    user_id: str,
+    weeks_ahead: int = 4
+) -> Dict[str, Any]:
+    """
+    Compute payroll coverage using high-confidence inflows only.
+
+    Shared between check_payroll_safety and generate_briefing.
+    Uses Layer 2 behavioral override: clients with active overdue invoices
+    have their inflows reclassified from HIGH -> MEDIUM.
+    """
+    # 1. Load payroll info from ExpenseBucket
+    payroll_result = await db.execute(
+        select(ExpenseBucket).where(
+            ExpenseBucket.user_id == user_id,
+            ExpenseBucket.category == "payroll"
+        )
+    )
+    payroll_buckets = payroll_result.scalars().all()
+
+    if not payroll_buckets:
+        return {
+            "has_payroll": False,
+            "message": "No payroll expense bucket found. Add a payroll expense to enable payroll safety checks."
+        }
+
+    total_monthly_payroll = sum(
+        Decimal(str(b.monthly_amount or 0)) for b in payroll_buckets
+    )
+    total_employee_count = sum(b.employee_count or 0 for b in payroll_buckets)
+    frequency = payroll_buckets[0].frequency or "monthly"
+
+    # Per-period amount (simplified: bi_weekly = monthly/2, weekly = monthly/4)
+    if frequency == "bi_weekly":
+        per_period = total_monthly_payroll / Decimal("2")
+    elif frequency == "weekly":
+        per_period = total_monthly_payroll / Decimal("4")
+    else:
+        per_period = total_monthly_payroll
+
+    # 2. Get forecast
+    forecast = await calculate_13_week_forecast(db, user_id)
+    weeks = forecast.get("weeks", [])
+
+    # 3. Layer 2: Find clients with overdue invoices
+    overdue_query = await db.execute(
+        select(ObligationAgreement.client_id)
+        .join(ObligationSchedule)
+        .where(
+            ObligationAgreement.user_id == user_id,
+            ObligationAgreement.client_id.isnot(None),
+            ObligationSchedule.status == "overdue"
+        )
+        .distinct()
+    )
+    overdue_client_ids = {row[0] for row in overdue_query.all()}
+
+    # Get overdue details for reporting (amount and days overdue per client)
+    overdue_details: Dict[str, Dict[str, Any]] = {}
+    if overdue_client_ids:
+        detail_query = await db.execute(
+            select(
+                ObligationSchedule.estimated_amount,
+                ObligationSchedule.due_date,
+                ObligationAgreement.client_id,
+                Client.name
+            )
+            .join(ObligationAgreement)
+            .join(Client, Client.id == ObligationAgreement.client_id)
+            .where(
+                ObligationAgreement.user_id == user_id,
+                ObligationAgreement.client_id.in_(overdue_client_ids),
+                ObligationSchedule.status == "overdue"
+            )
+        )
+        today = date.today()
+        for amount, due_date, client_id, client_name in detail_query.all():
+            if client_id not in overdue_details:
+                overdue_details[client_id] = {
+                    "client_name": client_name,
+                    "overdue_amount": Decimal("0"),
+                    "days_overdue": 0
+                }
+            overdue_details[client_id]["overdue_amount"] += amount
+            days = (today - due_date).days
+            overdue_details[client_id]["days_overdue"] = max(
+                overdue_details[client_id]["days_overdue"], days
+            )
+
+    # Build obligation_id -> client_id mapping for overdue clients.
+    # Needed because obligation-sourced events use obligation.id as source_id,
+    # not client.id directly.
+    obligation_to_client: Dict[str, str] = {}
+    if overdue_client_ids:
+        mapping_query = await db.execute(
+            select(ObligationAgreement.id, ObligationAgreement.client_id)
+            .where(
+                ObligationAgreement.user_id == user_id,
+                ObligationAgreement.client_id.in_(overdue_client_ids)
+            )
+        )
+        obligation_to_client = {
+            row.id: row.client_id for row in mapping_query.all()
+        }
+
+    # 4. Compute coverage per week
+    weeks_ahead = min(weeks_ahead, len(weeks) - 1)  # Week 0 is current
+    coverage_by_week = []
+    overall_status = "safe"
+    first_risk_week = None
+
+    for i in range(1, weeks_ahead + 1):
+        if i >= len(weeks):
+            break
+
+        week = weeks[i]
+        starting_balance = Decimal(str(week["starting_balance"]))
+        conf = week.get("confidence_breakdown", {})
+        high_conf_in = Decimal(str(conf.get("cash_in", {}).get("high", "0")))
+        medium_conf_in = Decimal(str(conf.get("cash_in", {}).get("medium", "0")))
+        total_cash_out = Decimal(str(week["cash_out"]))
+
+        # Layer 2: Reclassify HIGH inflows from clients with overdue invoices
+        downgraded_clients: List[Dict[str, Any]] = []
+        downgrade_amount = Decimal("0")
+
+        if overdue_client_ids:
+            for event in week.get("events", []):
+                if event.get("direction") != "in" or event.get("confidence") != "high":
+                    continue
+
+                # Match event to overdue client via source_id (direct client events)
+                # or via obligation_to_client mapping (obligation-sourced events)
+                matched_client_id = None
+                source_id = event.get("source_id", "")
+                if source_id in overdue_client_ids:
+                    matched_client_id = source_id
+                elif source_id in obligation_to_client:
+                    matched_client_id = obligation_to_client[source_id]
+
+                if matched_client_id:
+                    event_amount = Decimal(str(event["amount"]))
+                    downgrade_amount += event_amount
+                    client_info = overdue_details.get(matched_client_id, {})
+                    overdue_amt = client_info.get("overdue_amount", Decimal("0"))
+                    overdue_days = client_info.get("days_overdue", 0)
+                    downgraded_clients.append({
+                        "client_name": client_info.get("client_name", event.get("source_name", "Unknown")),
+                        "amount": str(event_amount),
+                        "reason": f"Has ${overdue_amt:,.0f} overdue by {overdue_days} days"
+                    })
+
+        adjusted_high = high_conf_in - downgrade_amount
+        adjusted_medium = medium_conf_in + downgrade_amount
+
+        conservative_balance = starting_balance + adjusted_high - total_cash_out
+        definitely_covered = conservative_balance >= 0
+        probably_covered = (conservative_balance + adjusted_medium) >= 0
+
+        week_data: Dict[str, Any] = {
+            "week_number": i,
+            "week_start": week.get("week_start"),
+            "starting_balance": str(starting_balance),
+            "high_conf_inflows": str(adjusted_high),
+            "medium_conf_inflows": str(adjusted_medium),
+            "total_cash_out": str(total_cash_out),
+            "conservative_balance": str(conservative_balance),
+            "definitely_covered": definitely_covered,
+            "probably_covered": probably_covered,
+            "surplus_or_shortfall": str(conservative_balance),
+        }
+
+        if downgraded_clients:
+            week_data["downgraded_clients"] = downgraded_clients
+
+        coverage_by_week.append(week_data)
+
+        # Update overall status (only escalate, never de-escalate)
+        if not definitely_covered:
+            if not probably_covered:
+                overall_status = "shortfall"
+                if first_risk_week is None:
+                    first_risk_week = i
+            elif overall_status == "safe":
+                overall_status = "at_risk"
+                if first_risk_week is None:
+                    first_risk_week = i
+
+    return {
+        "has_payroll": True,
+        "payroll_summary": {
+            "frequency": frequency,
+            "per_period_amount": str(per_period.quantize(Decimal("0.01"))),
+            "employee_count": total_employee_count,
+            "monthly_total": str(total_monthly_payroll)
+        },
+        "coverage_by_week": coverage_by_week,
+        "overall_status": overall_status,
+        "first_risk_week": first_risk_week,
+    }
+
+
+async def _check_payroll_safety(
+    db: AsyncSession,
+    user_id: str,
+    args: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Check whether upcoming payroll can be covered by confirmed cash."""
+    weeks_ahead = min(args.get("weeks_ahead", 4), 13)
+
+    coverage = await _compute_payroll_coverage(db, user_id, weeks_ahead)
+
+    if not coverage.get("has_payroll"):
+        return {"success": True, **coverage}
+
+    # Build human-readable message
+    status = coverage["overall_status"]
+    payroll = coverage["payroll_summary"]
+    freq_display = payroll["frequency"].replace("_", " ")
+    amount_display = f"${Decimal(payroll['per_period_amount']):,.0f}"
+
+    if status == "safe":
+        message = (
+            f"Payroll is safely covered for the next {weeks_ahead} weeks. "
+            f"{freq_display.title()} payroll of {amount_display} can be met "
+            f"from confirmed cash and high-confidence inflows."
+        )
+    elif status == "at_risk":
+        risk_week = coverage["first_risk_week"]
+        message = (
+            f"Payroll coverage is at risk starting week {risk_week}. "
+            f"High-confidence inflows alone don't cover all outflows, "
+            f"but medium-confidence inflows close the gap."
+        )
+    else:
+        risk_week = coverage["first_risk_week"]
+        message = (
+            f"Payroll shortfall detected in week {risk_week}. "
+            f"Even including medium-confidence inflows, cash may not "
+            f"cover all outflows including {freq_display} payroll of {amount_display}."
+        )
+
+    return {
+        "success": True,
+        **coverage,
+        "message": message
     }

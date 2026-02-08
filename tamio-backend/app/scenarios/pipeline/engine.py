@@ -45,8 +45,23 @@ from app.scenarios.pipeline.types import (
 from app.scenarios import models
 from app.scenarios.overlay import ScenarioOverlayService, compute_weekly_forecast_from_events
 from app.scenarios.commit import ScenarioCommitService
-from app.data.models import CashEvent, Client, ExpenseBucket, User, CashAccount
+from app.data.models import Client, ExpenseBucket, User, CashAccount
+from app.data.obligations.models import ObligationSchedule, ObligationAgreement
 from app.forecast.engine_v2 import calculate_13_week_forecast
+
+# NOTE: CashEvent has been removed in Phase 3 cleanup.
+# Legacy scenario code that used CashEvent queries needs updating.
+# The forecast engine now computes events on-the-fly from ObligationSchedules.
+
+
+# Import helper functions from scenario engine for compatibility
+from app.scenarios.engine import (
+    ScheduleEventAdapter,
+    _get_client_schedules,
+    _get_expense_schedules,
+    _get_user_schedules,
+    _get_schedule_by_id,
+)
 
 
 def generate_id(prefix: str) -> str:
@@ -1341,14 +1356,8 @@ class ScenarioPipeline:
                 base_forecast_data, delta, forecast_start
             )
         else:
-            # Legacy: Use CashEvent-based approach
-            result = await self.db.execute(
-                select(CashEvent).where(
-                    CashEvent.user_id == definition.user_id,
-                    CashEvent.date >= date.today()
-                ).order_by(CashEvent.date)
-            )
-            base_events = list(result.scalars().all())
+            # Legacy: Use schedule-based approach (migrated from CashEvent)
+            base_events = await _get_user_schedules(self.db, definition.user_id, date.today())
 
             # Apply delta to create layered events
             layered_events = self._apply_delta_to_events(base_events, delta)
@@ -1579,7 +1588,7 @@ class ScenarioPipeline:
 
     def _apply_delta_to_events(
         self,
-        base_events: List[CashEvent],
+        base_events: List[ScheduleEventAdapter],
         delta: ScenarioDelta
     ) -> List[Any]:
         """Apply ScenarioDelta to base events to create layered list."""
@@ -1924,63 +1933,26 @@ class ScenarioPipeline:
 
             return results
         else:
-            # Legacy: CashEvent-based commit
-            try:
-                # Apply created events
-                for created in delta.created_events:
-                    new_event = CashEvent(
-                        id=created.event_id,
-                        user_id=definition.user_id,
-                        date=datetime.fromisoformat(created.event_data["date"]).date(),
-                        amount=Decimal(str(created.event_data["amount"])),
-                        direction=created.event_data["direction"],
-                        event_type=created.event_data.get("event_type", "manual"),
-                        category=created.event_data.get("category"),
-                        confidence=created.event_data.get("confidence", "medium"),
-                        confidence_reason=f"scenario_{definition.scenario_id}",
-                        is_recurring=created.event_data.get("is_recurring", False),
-                        recurrence_pattern=created.event_data.get("recurrence_pattern"),
-                    )
-                    self.db.add(new_event)
+            # Legacy CashEvent-based commit is no longer supported
+            # Scenarios should use schedule-based deltas (V4 approach)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"Legacy CashEvent-based commit attempted for scenario {definition.scenario_id}. "
+                "This is no longer supported. Use schedule-based deltas instead."
+            )
 
-                # Apply updated events
-                for updated in delta.updated_events:
-                    result = await self.db.execute(
-                        select(CashEvent).where(CashEvent.id == updated.original_event_id)
-                    )
-                    event = result.scalar_one_or_none()
-                    if event:
-                        for key, value in updated.event_data.items():
-                            if key == "date":
-                                event.date = datetime.fromisoformat(value).date()
-                            elif key == "amount":
-                                event.amount = Decimal(str(value))
-                            elif hasattr(event, key):
-                                setattr(event, key, value)
+            # Update scenario status without committing any events
+            definition.status = ScenarioStatusEnum.CONFIRMED
+            definition.confirmed_at = datetime.now()
+            await self.db.commit()
 
-                # Apply deleted events
-                for event_id in delta.deleted_event_ids:
-                    result = await self.db.execute(
-                        select(CashEvent).where(CashEvent.id == event_id)
-                    )
-                    event = result.scalar_one_or_none()
-                    if event:
-                        await self.db.delete(event)
-
-                # Update scenario status
-                definition.status = ScenarioStatusEnum.CONFIRMED
-                definition.confirmed_at = datetime.now()
-
-                await self.db.commit()
-                return {
-                    "events_created": len(delta.created_events),
-                    "events_updated": len(delta.updated_events),
-                    "events_deleted": len(delta.deleted_event_ids),
-                }
-
-            except Exception as e:
-                await self.db.rollback()
-                raise e
+            return {
+                "events_created": 0,
+                "events_updated": 0,
+                "events_deleted": 0,
+                "warning": "Legacy CashEvent-based commit is deprecated. Use schedule-based deltas."
+            }
 
     # =========================================================================
     # PIPELINE STAGE 8: DISCARD SCENARIO

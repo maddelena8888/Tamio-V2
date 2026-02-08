@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 
-from app.data.models import User, CashAccount, Client, ExpenseBucket, CashEvent
+from app.data.models import User, CashAccount, Client, ExpenseBucket
 from app.scenarios.models import Scenario, FinancialRule, RuleEvaluation
 from app.forecast.engine_v2 import calculate_forecast_v2 as calculate_13_week_forecast
 from app.scenarios.engine import compute_scenario_forecast

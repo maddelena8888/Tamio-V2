@@ -280,11 +280,17 @@ async def suggest_scenarios(
     Each suggestion includes:
     - source_alert_id: Links to the originating alert (if applicable)
     - source_detection_type: The detection type that triggered this suggestion
+    - buffer_impact: Human-readable impact on runway/buffer
+    - priority: high/medium/low based on severity
 
     Returns:
         List of suggested scenario configs with alert linkage
     """
     suggestions = []
+
+    # Calculate base runway for buffer impact estimation
+    runway_weeks = forecast.get("summary", {}).get("runway_weeks", 13)
+    monthly_burn = await _calculate_monthly_opex(db, user_id)
 
     # ========================================================================
     # PHASE 1: Generate scenarios from ACTIVE DETECTION ALERTS
@@ -326,7 +332,9 @@ async def suggest_scenarios(
 
     # Map detection types to scenario types
     for alert in active_alerts:
-        suggestion = _alert_to_scenario_suggestion(alert, clients_by_id, expenses)
+        suggestion = _alert_to_scenario_suggestion(
+            alert, clients_by_id, expenses, monthly_burn, runway_weeks
+        )
         if suggestion and not _suggestion_exists(suggestions, suggestion):
             suggestions.append(suggestion)
 
@@ -343,6 +351,10 @@ async def suggest_scenarios(
     # Add payment delay scenarios for risky clients (if not already from alerts)
     if len(suggestions) < 3 and delayed_clients:
         client = delayed_clients[0]
+        client_monthly = get_client_amount(client)
+        buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+            "payment_delay_in", client_monthly, monthly_burn, runway_weeks
+        )
         suggestion = {
             "scenario_type": "payment_delay_in",
             "name": f"{client.name} Delays Payment by 14 Days",
@@ -350,6 +362,8 @@ async def suggest_scenarios(
             "priority": "high",
             "source_alert_id": None,
             "source_detection_type": None,
+            "buffer_impact": buffer_impact,
+            "buffer_impact_pct": buffer_impact_pct,
             "prefill_params": {
                 "client_id": client.id,
                 "delay_days": 14
@@ -362,6 +376,9 @@ async def suggest_scenarios(
     if len(suggestions) < 3 and high_risk_clients:
         client = high_risk_clients[0]
         monthly = get_client_amount(client)
+        buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+            "client_loss", monthly, monthly_burn, runway_weeks
+        )
         suggestion = {
             "scenario_type": "client_loss",
             "name": f"Loss of {client.name}",
@@ -369,6 +386,8 @@ async def suggest_scenarios(
             "priority": "high",
             "source_alert_id": None,
             "source_detection_type": None,
+            "buffer_impact": buffer_impact,
+            "buffer_impact_pct": buffer_impact_pct,
             "prefill_params": {
                 "client_id": client.id
             }
@@ -382,7 +401,10 @@ async def suggest_scenarios(
 
     if len(suggestions) < 3 and (has_breach or runway_weeks < 8) and discretionary_expenses:
         expense = discretionary_expenses[0]
-        reduction_amount = float(expense.monthly_amount) * 0.25 if expense.monthly_amount else 500
+        reduction_amount = Decimal(str(float(expense.monthly_amount) * 0.25)) if expense.monthly_amount else Decimal("500")
+        buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+            "decreased_expense", reduction_amount, monthly_burn, runway_weeks
+        )
         suggestion = {
             "scenario_type": "decreased_expense",
             "name": f"Reduce {expense.name}",
@@ -390,9 +412,11 @@ async def suggest_scenarios(
             "priority": "high" if has_breach else "medium",
             "source_alert_id": None,
             "source_detection_type": None,
+            "buffer_impact": buffer_impact,
+            "buffer_impact_pct": buffer_impact_pct,
             "prefill_params": {
                 "expense_bucket_id": expense.id,
-                "amount": reduction_amount
+                "amount": float(reduction_amount)
             }
         }
         if not _suggestion_exists(suggestions, suggestion):
@@ -404,6 +428,12 @@ async def suggest_scenarios(
     if len(suggestions) < 3 and clients_by_revenue:
         client = clients_by_revenue[0]
         monthly = get_client_amount(client)
+        buffer_impact_delay, buffer_impact_delay_pct = _calculate_buffer_impact(
+            "payment_delay_in", monthly, monthly_burn, runway_weeks
+        )
+        buffer_impact_loss, buffer_impact_loss_pct = _calculate_buffer_impact(
+            "client_loss", monthly, monthly_burn, runway_weeks
+        )
 
         # Payment delay for largest client
         if not any(s["scenario_type"] == "payment_delay_in" for s in suggestions):
@@ -414,6 +444,8 @@ async def suggest_scenarios(
                 "priority": "medium",
                 "source_alert_id": None,
                 "source_detection_type": None,
+                "buffer_impact": buffer_impact_delay,
+                "buffer_impact_pct": buffer_impact_delay_pct,
                 "prefill_params": {
                     "client_id": client.id,
                     "delay_days": 14
@@ -429,24 +461,76 @@ async def suggest_scenarios(
                 "priority": "medium",
                 "source_alert_id": None,
                 "source_detection_type": None,
+                "buffer_impact": buffer_impact_loss,
+                "buffer_impact_pct": buffer_impact_loss_pct,
                 "prefill_params": {
                     "client_id": client.id
                 }
             })
 
-    # Expense increase as final fallback
-    if len(suggestions) < 3:
-        suggestions.append({
-            "scenario_type": "increased_expense",
-            "name": "Increased Operating Costs",
-            "description": "Model a 10% increase in operating expenses.",
-            "priority": "low",
+    # ========================================================================
+    # PHASE 4: Hardcoded fallbacks to ensure we ALWAYS have at least 3
+    # These are generic suggestions that don't require any database data
+    # ========================================================================
+    hardcoded_fallbacks = [
+        {
+            "scenario_type": "payment_delay_in",
+            "name": "What if a key client pays 30 days late?",
+            "description": "Model the cash flow impact of a major client delaying their payment by a month.",
+            "priority": "high",
             "source_alert_id": None,
             "source_detection_type": None,
+            "buffer_impact": "-2.5 weeks buffer",
+            "buffer_impact_pct": -15.0,
             "prefill_params": {
-                "amount": 2000
+                "delay_days": 30
             }
-        })
+        },
+        {
+            "scenario_type": "client_loss",
+            "name": "What if we lose a major client?",
+            "description": "Model the impact of losing your largest client to understand concentration risk.",
+            "priority": "high",
+            "source_alert_id": None,
+            "source_detection_type": None,
+            "buffer_impact": "-4.2 weeks buffer",
+            "buffer_impact_pct": -25.0,
+            "prefill_params": {}
+        },
+        {
+            "scenario_type": "increased_expense",
+            "name": "What if operating costs increase 20%?",
+            "description": "Model a significant increase in operating expenses to stress test your runway.",
+            "priority": "medium",
+            "source_alert_id": None,
+            "source_detection_type": None,
+            "buffer_impact": "-1.8 weeks buffer",
+            "buffer_impact_pct": -12.0,
+            "prefill_params": {
+                "percentage": 20
+            }
+        },
+        {
+            "scenario_type": "hiring",
+            "name": "Can we afford a new hire?",
+            "description": "Model the impact of adding a new team member at $8,000/month total cost.",
+            "priority": "medium",
+            "source_alert_id": None,
+            "source_detection_type": None,
+            "buffer_impact": "-1.2 weeks buffer",
+            "buffer_impact_pct": -8.0,
+            "prefill_params": {
+                "monthly_amount": 8000
+            }
+        },
+    ]
+
+    # Add hardcoded fallbacks until we have at least 3 suggestions
+    for fallback in hardcoded_fallbacks:
+        if len(suggestions) >= 3:
+            break
+        if not any(s["scenario_type"] == fallback["scenario_type"] for s in suggestions):
+            suggestions.append(fallback)
 
     return suggestions[:3]  # Return top 3 suggestions
 
@@ -454,7 +538,9 @@ async def suggest_scenarios(
 def _alert_to_scenario_suggestion(
     alert: DetectionAlert,
     clients_by_id: Dict[str, Client],
-    expenses: List[ExpenseBucket]
+    expenses: List[ExpenseBucket],
+    monthly_burn: Decimal = Decimal("0"),
+    runway_weeks: float = 13.0
 ) -> Optional[Dict[str, Any]]:
     """
     Convert a detection alert into a scenario suggestion.
@@ -474,6 +560,10 @@ def _alert_to_scenario_suggestion(
         client_id = context.get("client_id")
         client_name = context.get("client_name", "Client")
         days_overdue = context.get("days_overdue", 14)
+        invoice_amount = Decimal(str(context.get("invoice_amount", 10000)))
+        buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+            "payment_delay_in", invoice_amount, monthly_burn, runway_weeks
+        )
 
         return {
             "scenario_type": "payment_delay_in",
@@ -481,7 +571,9 @@ def _alert_to_scenario_suggestion(
             "description": f"Active alert: {client_name} payment is {days_overdue} days overdue. Model extended delay impact.",
             "priority": priority,
             "source_alert_id": alert.id,
-            "source_detection_type": alert.detection_type.value,
+            "source_detection_type": alert.detection_type,
+            "buffer_impact": buffer_impact,
+            "buffer_impact_pct": buffer_impact_pct,
             "prefill_params": {
                 "client_id": client_id,
                 "delay_days": days_overdue
@@ -496,6 +588,9 @@ def _alert_to_scenario_suggestion(
         monthly = Decimal("0")
         if client and client.billing_config:
             monthly = Decimal(str(client.billing_config.get("amount", 0)))
+        buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+            "client_loss", monthly, monthly_burn, runway_weeks
+        )
 
         return {
             "scenario_type": "client_loss",
@@ -503,7 +598,9 @@ def _alert_to_scenario_suggestion(
             "description": f"Active alert: {client_name} has high churn risk. Model losing this client (${monthly:,.0f}/month).",
             "priority": priority,
             "source_alert_id": alert.id,
-            "source_detection_type": alert.detection_type.value,
+            "source_detection_type": alert.detection_type,
+            "buffer_impact": buffer_impact,
+            "buffer_impact_pct": buffer_impact_pct,
             "prefill_params": {
                 "client_id": client_id
             }
@@ -513,7 +610,10 @@ def _alert_to_scenario_suggestion(
         # Unexpected expense spike -> suggest modeling continued increase
         bucket_id = context.get("bucket_id")
         bucket_name = context.get("bucket_name", "Expense")
-        variance_amount = context.get("variance_amount", 0)
+        variance_amount = Decimal(str(context.get("variance_amount", 2000)))
+        buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+            "increased_expense", variance_amount, monthly_burn, runway_weeks
+        )
 
         return {
             "scenario_type": "increased_expense",
@@ -521,10 +621,12 @@ def _alert_to_scenario_suggestion(
             "description": f"Active alert: {bucket_name} spiked unexpectedly. Model continued increase.",
             "priority": priority,
             "source_alert_id": alert.id,
-            "source_detection_type": alert.detection_type.value,
+            "source_detection_type": alert.detection_type,
+            "buffer_impact": buffer_impact,
+            "buffer_impact_pct": buffer_impact_pct,
             "prefill_params": {
                 "expense_bucket_id": bucket_id,
-                "amount": variance_amount
+                "amount": float(variance_amount)
             }
         }
 
@@ -536,23 +638,32 @@ def _alert_to_scenario_suggestion(
         discretionary = [e for e in expenses if e.priority in ["low", "medium"]]
         if discretionary:
             expense = discretionary[0]
+            reduction_amount = Decimal(str(float(expense.monthly_amount or 0) * 0.25))
+            buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+                "decreased_expense", reduction_amount, monthly_burn, runway_weeks
+            )
             return {
                 "scenario_type": "decreased_expense",
                 "name": f"Reduce {expense.name} by 25%",
                 "description": f"Active alert: Cash buffer breach detected. Model reducing {expense.name} to improve buffer.",
                 "priority": "high",
                 "source_alert_id": alert.id,
-                "source_detection_type": alert.detection_type.value,
+                "source_detection_type": alert.detection_type,
+                "buffer_impact": buffer_impact,
+                "buffer_impact_pct": buffer_impact_pct,
                 "prefill_params": {
                     "expense_bucket_id": expense.id,
-                    "amount": float(expense.monthly_amount or 0) * 0.25
+                    "amount": float(reduction_amount)
                 }
             }
 
     elif alert.detection_type == DetectionType.PAYROLL_SAFETY:
         # Payroll at risk -> suggest accelerating collections (payment delay in reverse)
         # This suggests what happens if a key client delays further
-        shortfall = context.get("shortfall", 0)
+        shortfall = Decimal(str(context.get("shortfall", 15000)))
+        buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+            "payment_delay_in", shortfall, monthly_burn, runway_weeks
+        )
 
         return {
             "scenario_type": "payment_delay_in",
@@ -560,7 +671,9 @@ def _alert_to_scenario_suggestion(
             "description": f"Active alert: Payroll safety at risk. Model impact if key payment is delayed.",
             "priority": "high",
             "source_alert_id": alert.id,
-            "source_detection_type": alert.detection_type.value,
+            "source_detection_type": alert.detection_type,
+            "buffer_impact": buffer_impact,
+            "buffer_impact_pct": buffer_impact_pct,
             "prefill_params": {
                 "delay_days": 7
             }
@@ -573,16 +686,22 @@ def _alert_to_scenario_suggestion(
         discretionary = [e for e in expenses if e.priority in ["low", "medium"]]
         if discretionary:
             expense = discretionary[0]
+            reduction_amount = Decimal(str(float(expense.monthly_amount or 0) * 0.3))
+            buffer_impact, buffer_impact_pct = _calculate_buffer_impact(
+                "decreased_expense", reduction_amount, monthly_burn, runway_weeks
+            )
             return {
                 "scenario_type": "decreased_expense",
                 "name": f"Reduce {expense.name}",
                 "description": f"Active alert: Runway is {weeks_remaining} weeks. Model cost reduction to extend runway.",
                 "priority": "high",
                 "source_alert_id": alert.id,
-                "source_detection_type": alert.detection_type.value,
+                "source_detection_type": alert.detection_type,
+                "buffer_impact": buffer_impact,
+                "buffer_impact_pct": buffer_impact_pct,
                 "prefill_params": {
                     "expense_bucket_id": expense.id,
-                    "amount": float(expense.monthly_amount or 0) * 0.3
+                    "amount": float(reduction_amount)
                 }
             }
 
@@ -609,3 +728,49 @@ def _suggestion_exists(suggestions: List[Dict], new_suggestion: Dict) -> bool:
                 return True
 
     return False
+
+
+def _calculate_buffer_impact(
+    scenario_type: str,
+    monthly_impact: Decimal,
+    monthly_burn: Decimal,
+    runway_weeks: float
+) -> tuple[str, float]:
+    """
+    Calculate buffer impact for a scenario suggestion.
+
+    Returns:
+        Tuple of (human-readable string, percentage impact)
+    """
+    if monthly_burn <= 0:
+        return ("-0.0 weeks buffer", 0.0)
+
+    # Calculate weekly burn
+    weekly_burn = monthly_burn / Decimal("4.33")
+
+    # Estimate impact on runway based on scenario type
+    if scenario_type in ["payment_delay_in", "client_loss"]:
+        # Revenue reduction - negative impact
+        if monthly_impact > 0:
+            weeks_impact = float(monthly_impact / weekly_burn)
+            return (f"-{weeks_impact:.1f} weeks buffer", -weeks_impact / runway_weeks * 100 if runway_weeks > 0 else 0)
+
+    elif scenario_type in ["payment_delay_out", "decreased_expense", "firing", "contractor_loss"]:
+        # Cost savings - positive impact (initially)
+        if monthly_impact > 0:
+            weeks_impact = float(monthly_impact / weekly_burn)
+            return (f"+{weeks_impact:.1f} weeks buffer", weeks_impact / runway_weeks * 100 if runway_weeks > 0 else 0)
+
+    elif scenario_type in ["hiring", "contractor_gain", "increased_expense"]:
+        # Cost increase - negative impact
+        if monthly_impact > 0:
+            weeks_impact = float(monthly_impact / weekly_burn)
+            return (f"-{weeks_impact:.1f} weeks buffer", -weeks_impact / runway_weeks * 100 if runway_weeks > 0 else 0)
+
+    elif scenario_type == "client_gain":
+        # Revenue increase - positive impact
+        if monthly_impact > 0:
+            weeks_impact = float(monthly_impact / weekly_burn)
+            return (f"+{weeks_impact:.1f} weeks buffer", weeks_impact / runway_weeks * 100 if runway_weeks > 0 else 0)
+
+    return ("-1.0 weeks buffer", -10.0)  # Default conservative estimate

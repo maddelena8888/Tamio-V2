@@ -12,7 +12,7 @@ from app.config import settings
 
 # Import all models to ensure they're registered with Base
 from app.data.models import (
-    User, CashAccount, Client, ExpenseBucket, CashEvent,
+    User, CashAccount, Client, ExpenseBucket,
     ObligationAgreement, ObligationSchedule, PaymentEvent
 )
 from app.xero.models import XeroConnection, XeroSyncLog

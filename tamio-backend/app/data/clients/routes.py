@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from datetime import date
 
 from app.database import get_db
@@ -13,8 +13,10 @@ from app.data.clients.schemas import (
     ClientUpdate,
     ClientWithEventsResponse,
 )
-from app.data.event_generator import generate_events_from_client
-from app.config import settings
+from app.auth.dependencies import get_current_user
+
+if TYPE_CHECKING:
+    from app.services.obligations import ObligationService
 
 router = APIRouter()
 
@@ -92,6 +94,7 @@ def _should_auto_pause_client(billing_config: dict, client_type: str) -> bool:
 @router.post("/clients", response_model=ClientWithEventsResponse)
 async def create_client(
     data: ClientCreate,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     sync_to_xero: bool = Query(default=True, description="Sync to Xero if connected"),
     create_xero_invoice: bool = Query(default=False, description="Create repeating invoice in Xero for retainers"),
@@ -101,21 +104,14 @@ async def create_client(
     If sync_to_xero=True and user has an active Xero connection,
     the client will be pushed to Xero as a Contact.
     """
-    # Verify user exists
-    result = await db.execute(
-        select(models.User).where(models.User.id == data.user_id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="User not found")
-
     # Auto-detect if client should be paused (no revenue attached)
     effective_status = data.status
     if effective_status == "active" and _should_auto_pause_client(data.billing_config, data.client_type):
         effective_status = "paused"
 
-    # Create client
+    # Create client - use authenticated user's ID
     client = models.Client(
-        user_id=data.user_id,
+        user_id=current_user.id,
         name=data.name,
         client_type=data.client_type,
         currency=data.currency,
@@ -132,14 +128,10 @@ async def create_client(
     await db.commit()
     await db.refresh(client)
 
-    # Generate cash events from billing config (legacy approach)
-    events = await generate_events_from_client(db, client)
-
-    # Create ObligationAgreement from client (new canonical approach)
-    if settings.USE_OBLIGATION_SYSTEM:
-        from app.services.obligations import ObligationService
-        obligation_service = ObligationService(db)
-        await obligation_service.create_obligation_from_client(client)
+    # Create ObligationAgreement and schedules from client
+    from app.services.obligations import ObligationService
+    obligation_svc = ObligationService(db)
+    await obligation_svc.create_obligation_from_client(client)
 
     # Sync to Xero if requested
     if sync_to_xero:
@@ -148,20 +140,20 @@ async def create_client(
 
     return ClientWithEventsResponse(
         client=client,
-        generated_events=events
+        generated_events=[]  # Events are now computed on-the-fly from obligations
     )
 
 
 @router.get("/clients", response_model=List[ClientResponse])
 async def get_clients(
-    user_id: str = Query(...),
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get all clients for a user."""
+    """Get all clients for the authenticated user."""
     result = await db.execute(
         select(models.Client)
         .where(
-            models.Client.user_id == user_id,
+            models.Client.user_id == current_user.id,
             models.Client.status != "deleted"
         )
     )
@@ -172,6 +164,7 @@ async def get_clients(
 async def update_client(
     client_id: str,
     data: ClientUpdate,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     sync_to_xero: bool = Query(default=True, description="Sync changes to Xero if connected"),
 ):
@@ -186,6 +179,10 @@ async def update_client(
     client = result.scalar_one_or_none()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
+
+    # Verify ownership - user can only update their own clients
+    if client.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this client")
 
     # Check for locked fields (Xero-controlled)
     locked = client.locked_fields or []
@@ -221,24 +218,10 @@ async def update_client(
     await db.commit()
     await db.refresh(client)
 
-    # Regenerate events
-    # Delete future events
-    await db.execute(
-        delete(models.CashEvent).where(
-            models.CashEvent.client_id == client_id,
-            models.CashEvent.date >= date.today()
-        )
-    )
-    await db.commit()
-
-    # Generate new events (legacy approach)
-    events = await generate_events_from_client(db, client)
-
-    # Sync ObligationAgreement when client is updated (new canonical approach)
-    if settings.USE_OBLIGATION_SYSTEM:
-        from app.services.obligations import ObligationService
-        obligation_service = ObligationService(db)
-        await obligation_service.sync_obligation_from_client(client)
+    # Sync ObligationAgreement when client is updated
+    from app.services.obligations import ObligationService
+    obligation_svc = ObligationService(db)
+    await obligation_svc.sync_obligation_from_client(client)
 
     # Sync to Xero if requested and client is linked
     if sync_to_xero and client.xero_contact_id:
@@ -247,13 +230,14 @@ async def update_client(
 
     return ClientWithEventsResponse(
         client=client,
-        generated_events=events
+        generated_events=[]  # Events are now computed on-the-fly from obligations
     )
 
 
 @router.delete("/clients/{client_id}")
 async def delete_client(
     client_id: str,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     archive_in_xero: bool = Query(default=True, description="Archive the contact in Xero"),
 ):
@@ -269,6 +253,10 @@ async def delete_client(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
+    # Verify ownership - user can only delete their own clients
+    if client.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this client")
+
     # Archive in Xero if linked
     if archive_in_xero and client.xero_contact_id:
         from app.xero.sync_service import SyncService
@@ -277,6 +265,11 @@ async def delete_client(
         if not success:
             # Log but don't fail - Tamio deletion should still proceed
             print(f"Warning: Failed to archive client in Xero: {error}")
+
+    # Clean up related obligations
+    from app.services.obligations import ObligationService
+    obligation_svc = ObligationService(db)
+    await obligation_svc.delete_obligations_for_client(client_id)
 
     client.status = "deleted"
     await db.commit()

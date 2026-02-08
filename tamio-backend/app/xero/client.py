@@ -160,7 +160,7 @@ async def get_valid_connection(
         select(XeroConnection).where(
             XeroConnection.user_id == user_id,
             XeroConnection.is_active == True
-        )
+        ).with_for_update()
     )
     connection = result.scalar_one_or_none()
 
@@ -230,7 +230,8 @@ class XeroClient:
         self,
         statuses: Optional[List[str]] = None,
         where: Optional[str] = None,
-        page: int = 1
+        page: int = 1,
+        fetch_all: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Get invoices from Xero.
@@ -238,20 +239,37 @@ class XeroClient:
         Args:
             statuses: Filter by statuses (DRAFT, SUBMITTED, AUTHORISED, PAID, etc.)
             where: Xero filter expression
-            page: Page number for pagination
+            page: Page number for pagination (starting page if fetch_all=True)
+            fetch_all: If True, auto-paginate to fetch all matching results
         """
+        all_invoices = []
+        current_page = page
+
+        while True:
+            # Build kwargs to avoid passing None values
+            kwargs = {"xero_tenant_id": self.tenant_id, "page": current_page}
+            if statuses:
+                kwargs["statuses"] = statuses
+            if where:
+                kwargs["where"] = where
+
+            response = self.accounting_api.get_invoices(**kwargs)
+            page_invoices = response.invoices or []
+            
+            # If no invoices returned, we're done
+            if not page_invoices:
+                break
+                
+            all_invoices.extend(page_invoices)
+            
+            # If we're not fetching all, or if we got fewer than 100 items (default page size), we're done
+            if not fetch_all or len(page_invoices) < 100:
+                break
+                
+            current_page += 1
+
         invoices = []
-
-        # Build kwargs to avoid passing None values
-        kwargs = {"xero_tenant_id": self.tenant_id, "page": page}
-        if statuses:
-            kwargs["statuses"] = statuses
-        if where:
-            kwargs["where"] = where
-
-        response = self.accounting_api.get_invoices(**kwargs)
-
-        for inv in response.invoices or []:
+        for inv in all_invoices:
             # Convert type enum to string if needed
             inv_type = inv.type
             if hasattr(inv_type, 'value'):
@@ -292,7 +310,11 @@ class XeroClient:
         """Get all outstanding (unpaid) invoices."""
         # Get all AUTHORISED invoices (outstanding) - these have amount due > 0
         # The statuses filter uses specific status values
-        all_invoices = self.get_invoices(statuses=["AUTHORISED", "SUBMITTED"])
+        # Fetch ALL pages to ensure we don't miss any outstanding invoices
+        all_invoices = self.get_invoices(
+            statuses=["AUTHORISED", "SUBMITTED"], 
+            fetch_all=True
+        )
 
         # Filter to only those with amount due
         outstanding = [inv for inv in all_invoices if inv["amount_due"] > 0]
@@ -307,24 +329,46 @@ class XeroClient:
         self,
         is_customer: Optional[bool] = None,
         is_supplier: Optional[bool] = None,
-        page: int = 1
+        page: int = 1,
+        fetch_all: bool = False
     ) -> List[Dict[str, Any]]:
-        """Get contacts from Xero."""
+        """Get contacts from Xero.
+        
+        Args:
+            is_customer: Filter by IsCustomer
+            is_supplier: Filter by IsSupplier
+            page: Page number
+            fetch_all: If True, auto-paginate to fetch all matching results
+        """
+        all_contacts = []
+        current_page = page
+        
+        while True:
+            where = None
+            if is_customer is not None:
+                where = f"IsCustomer=={str(is_customer).lower()}"
+            elif is_supplier is not None:
+                where = f"IsSupplier=={str(is_supplier).lower()}"
+
+            response = self.accounting_api.get_contacts(
+                self.tenant_id,
+                where=where,
+                page=current_page
+            )
+            
+            page_contacts = response.contacts or []
+            if not page_contacts:
+                break
+                
+            all_contacts.extend(page_contacts)
+            
+            if not fetch_all or len(page_contacts) < 100:
+                break
+                
+            current_page += 1
+
         contacts = []
-
-        where = None
-        if is_customer is not None:
-            where = f"IsCustomer=={str(is_customer).lower()}"
-        elif is_supplier is not None:
-            where = f"IsSupplier=={str(is_supplier).lower()}"
-
-        response = self.accounting_api.get_contacts(
-            self.tenant_id,
-            where=where,
-            page=page
-        )
-
-        for contact in response.contacts or []:
+        for contact in all_contacts:
             # Extract payment terms if available
             payment_terms = None
             if contact.payment_terms and contact.payment_terms.sales:

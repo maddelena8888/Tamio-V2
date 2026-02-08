@@ -430,6 +430,26 @@ def setup_apscheduler(scheduler):
         replace_existing=True,
     )
 
+    # Background Xero sync every 30 minutes (fixes stale data issue)
+    scheduler.add_job(
+        run_xero_background_sync,
+        'interval',
+        minutes=30,
+        id='xero_background_sync',
+        name='Background Xero Sync',
+        replace_existing=True,
+    )
+
+    # OAuth state cleanup every hour
+    scheduler.add_job(
+        cleanup_expired_oauth_states,
+        'interval',
+        hours=1,
+        id='oauth_state_cleanup',
+        name='OAuth State Cleanup',
+        replace_existing=True,
+    )
+
     logger.info("Detection scheduler jobs configured")
 
 
@@ -448,3 +468,98 @@ async def run_detections_after_sync(user_id: str, sync_type: str = "xero") -> di
     """
     logger.info(f"Running post-sync detections for user {user_id} after {sync_type} sync")
     return await detection_scheduler.run_all_detections_for_user(user_id)
+
+
+# =============================================================================
+# XERO BACKGROUND SYNC
+# =============================================================================
+
+async def run_xero_background_sync() -> dict:
+    """
+    Background job to sync Xero data for all users with active connections.
+
+    Runs every 30 minutes to ensure data freshness.
+    This fixes the "stale data" issue where users only see updated data
+    after manually triggering a sync.
+    """
+    logger.info("Starting background Xero sync for all active connections")
+
+    summary = {
+        "started_at": datetime.utcnow().isoformat(),
+        "users_synced": 0,
+        "sync_errors": 0,
+        "errors": [],
+    }
+
+    async with async_session_maker() as db:
+        try:
+            from app.xero.models import XeroConnection
+            from app.xero.sync import sync_xero_data
+
+            # Get all active Xero connections
+            result = await db.execute(
+                select(XeroConnection).where(XeroConnection.is_active == True)
+            )
+            connections = result.scalars().all()
+
+            logger.info(f"Found {len(connections)} active Xero connections to sync")
+
+            for connection in connections:
+                try:
+                    # Run incremental sync for each user
+                    await sync_xero_data(
+                        db=db,
+                        user_id=connection.user_id,
+                        sync_type="incremental"
+                    )
+                    summary["users_synced"] += 1
+                    logger.info(f"Background sync completed for user {connection.user_id}")
+
+                except Exception as e:
+                    summary["sync_errors"] += 1
+                    summary["errors"].append({
+                        "user_id": connection.user_id,
+                        "error": str(e),
+                    })
+                    logger.error(f"Background sync failed for user {connection.user_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"Background Xero sync run failed: {e}")
+            summary["errors"].append({"error": str(e)})
+
+    summary["completed_at"] = datetime.utcnow().isoformat()
+    logger.info(f"Background Xero sync completed: {summary['users_synced']} users synced, {summary['sync_errors']} errors")
+    return summary
+
+
+async def cleanup_expired_oauth_states() -> dict:
+    """
+    Cleanup job to remove expired OAuth states from the database.
+
+    Runs every hour to prevent table bloat from abandoned OAuth flows.
+    """
+    logger.info("Cleaning up expired OAuth states")
+
+    summary = {
+        "started_at": datetime.utcnow().isoformat(),
+        "states_removed": 0,
+    }
+
+    async with async_session_maker() as db:
+        try:
+            from app.xero.models import OAuthState
+            from sqlalchemy import delete
+
+            result = await db.execute(
+                delete(OAuthState).where(OAuthState.expires_at < datetime.utcnow())
+            )
+            await db.commit()
+            summary["states_removed"] = result.rowcount or 0
+
+        except Exception as e:
+            logger.error(f"OAuth state cleanup failed: {e}")
+            summary["error"] = str(e)
+
+    summary["completed_at"] = datetime.utcnow().isoformat()
+    logger.info(f"OAuth state cleanup completed: {summary['states_removed']} states removed")
+    return summary

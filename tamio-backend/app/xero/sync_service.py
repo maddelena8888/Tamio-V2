@@ -326,11 +326,12 @@ class SyncService:
         errors = []
 
         try:
-            contacts = xero.get_contacts(is_customer=True)
+            # Fetch ALL contacts (customers)
+            contacts = xero.get_contacts(is_customer=True, fetch_all=True)
 
             for contact in contacts:
                 try:
-                    # Check if we already have this client
+                    # 1. Check if we already have this client linked by Xero ID
                     result = await self.db.execute(
                         select(Client).where(
                             Client.user_id == self.user_id,
@@ -338,6 +339,23 @@ class SyncService:
                         )
                     )
                     existing = result.scalar_one_or_none()
+
+                    # 2. Smart Match: Check by Name if not linked yet
+                    if not existing:
+                        result = await self.db.execute(
+                            select(Client).where(
+                                Client.user_id == self.user_id,
+                                Client.name.ilike(contact["name"]), # Case-insensitive match
+                                Client.xero_contact_id.is_(None)
+                            )
+                        )
+                        existing = result.scalar_one_or_none()
+                        
+                        if existing:
+                            # We found a match! Link it.
+                            existing.xero_contact_id = contact["contact_id"]
+                            existing.source = "xero" # Take ownership or keep manual? Let's treat as synced now.
+                            await self._log_sync("client_smart_match", existing.id, "success", f"Linked '{contact['name']}' to existing client")
 
                     if existing:
                         # Update if Xero-owned (source="xero")
@@ -399,11 +417,12 @@ class SyncService:
         errors = []
 
         try:
-            contacts = xero.get_contacts(is_supplier=True)
+            # Fetch ALL contacts (suppliers)
+            contacts = xero.get_contacts(is_supplier=True, fetch_all=True)
 
             for contact in contacts:
                 try:
-                    # Check if we already have this expense
+                    # 1. Check if we already have this expense linked by Xero ID
                     result = await self.db.execute(
                         select(ExpenseBucket).where(
                             ExpenseBucket.user_id == self.user_id,
@@ -411,6 +430,23 @@ class SyncService:
                         )
                     )
                     existing = result.scalar_one_or_none()
+
+                    # 2. Smart Match: Check by Name if not linked yet
+                    if not existing:
+                        result = await self.db.execute(
+                            select(ExpenseBucket).where(
+                                ExpenseBucket.user_id == self.user_id,
+                                ExpenseBucket.name.ilike(contact["name"]),
+                                ExpenseBucket.xero_contact_id.is_(None)
+                            )
+                        )
+                        existing = result.scalar_one_or_none()
+                        
+                        if existing:
+                            # Match found! Link it.
+                            existing.xero_contact_id = contact["contact_id"]
+                            existing.source = "xero"
+                            await self._log_sync("expense_smart_match", existing.id, "success", f"Linked '{contact['name']}' to existing expense")
 
                     if existing:
                         # Update if Xero-owned
@@ -575,6 +611,18 @@ class SyncService:
 
         return invoices_processed, clients_updated, errors
 
+    async def pull_invoices_and_update_status(self) -> Tuple[int, int, List[str]]:
+        """Wrapper for pull_invoices that also updates the connection status."""
+        processed, updated, errors = await self.pull_invoices_from_xero()
+        
+        await self._update_connection_status(
+            success=len(errors) == 0, 
+            error="; ".join(errors) if errors else None
+        )
+        await self.db.commit()
+        
+        return processed, updated, errors
+
     async def full_sync_from_xero(self) -> Dict[str, Any]:
         """
         Perform a full sync: contacts + invoices.
@@ -603,13 +651,41 @@ class SyncService:
         processed, clients_updated, errors = await self.pull_invoices_from_xero()
         results["invoices"]["processed"] = processed
         results["invoices"]["clients_updated"] = clients_updated
+        results["invoices"]["processed"] = processed
+        results["invoices"]["clients_updated"] = clients_updated
         results["invoices"]["errors"] = errors
+
+        # Update connection status
+        has_errors = any(len(r["errors"]) > 0 for r in results.values())
+        error_msg = "; ".join([e for r in results.values() for e in r["errors"]]) if has_errors else None
+        
+        await self._update_connection_status(success=not has_errors, error=error_msg)
 
         return results
 
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    async def _update_connection_status(self, success: bool, error: Optional[str] = None) -> None:
+        """Update the connection status and last sync timestamp."""
+        result = await self.db.execute(
+            select(XeroConnection).where(
+                XeroConnection.user_id == self.user_id,
+                XeroConnection.is_active == True
+            )
+        )
+        connection = result.scalar_one_or_none()
+        
+        if connection:
+            if success:
+                connection.last_sync_at = datetime.now(timezone.utc)
+                connection.sync_error = None
+            else:
+                connection.sync_error = error
+                # Don't update last_sync_at on failure
+            
+            # Note: We don't commit here as it's part of a larger transaction usually
 
     async def _log_sync(
         self,

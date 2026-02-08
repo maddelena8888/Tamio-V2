@@ -3,10 +3,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import MainLayout from '@/layouts/MainLayout';
 
 // V4 Primary Pages
-import Home from '@/pages/Home';
 import AlertHeroHome from '@/pages/AlertHeroHome';
 import AlertImpact from '@/pages/AlertImpact';
-import AlertsActions from '@/pages/AlertsActions';
 import Dashboard from '@/pages/Dashboard';
 import Tami from '@/pages/Tami';
 
@@ -19,6 +17,10 @@ import Settings from '@/pages/Settings';
 // V5 Pages
 import Forecast from '@/pages/Forecast';
 import Health from '@/pages/Health';
+import ForecastCanvas from '@/pages/ForecastCanvas';
+import Projections from '@/pages/Projections';
+import Rules from '@/pages/Rules';
+import UnifiedForecast from '@/pages/UnifiedForecast';
 
 // Auth & Onboarding
 import Login from '@/pages/Login';
@@ -170,23 +172,26 @@ export const router = createBrowserRouter([
         path: '/',
         element: <MainLayout />,
         children: [
-          // Alert-focused home page (V5)
-          { index: true, element: <AlertHeroHome /> },
-          // Legacy dashboard route (V4)
-          { path: 'dashboard-legacy', element: <Home /> },
+          // Home page (Forecast Canvas)
+          { index: true, element: <ForecastCanvas /> },
           // Alert Impact visualization route
           { path: 'alerts/:alertId/impact', element: <AlertImpact /> },
           { path: 'tami', element: <Tami /> },
           { path: 'dashboard', element: <Dashboard /> },
-          { path: 'action-monitor', element: <AlertsActions /> },
-          { path: 'clients', element: <ClientsExpenses /> },
-          { path: 'scenarios', element: <ScenarioBuilder /> },
+          { path: 'ledger', element: <ClientsExpenses /> },
+          // Legacy route redirect
+          { path: 'clients', element: <Navigate to="/ledger" replace /> },
+          { path: 'scenarios', element: <Forecast /> },
           { path: 'scenarios/legacy', element: <Scenarios /> },
-          { path: 'forecast', element: <Forecast /> },
+          { path: 'scenarios/builder', element: <ScenarioBuilder /> },
           { path: 'health', element: <Health /> },
-          // Placeholder routes for monitor card navigation (redirect to alerts for now)
-          { path: 'obligations', element: <Navigate to="/action-monitor" replace /> },
-          { path: 'receivables', element: <Navigate to="/action-monitor" replace /> },
+          { path: 'home', element: <Navigate to="/" replace /> },
+          { path: 'projections', element: <Projections /> },
+          { path: 'forecast-scenarios', element: <UnifiedForecast /> },
+          { path: 'rules', element: <Rules /> },
+          // Placeholder routes for monitor card navigation
+          { path: 'obligations', element: <Navigate to="/" replace /> },
+          { path: 'receivables', element: <Navigate to="/" replace /> },
           { path: 'settings', element: <Settings /> },
         ],
       },

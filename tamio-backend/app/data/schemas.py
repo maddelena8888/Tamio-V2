@@ -34,9 +34,6 @@ from app.data.expenses.schemas import (
     ExpenseBucketWithEventsResponse,
 )
 
-# Event schemas
-from app.data.events.schemas import CashEventResponse
-
 # Onboarding schemas
 from app.data.onboarding import OnboardingCreate, OnboardingResponse
 
@@ -62,8 +59,6 @@ __all__ = [
     "ExpenseBucketUpdate",
     "ExpenseBucketCreateForOnboarding",
     "ExpenseBucketWithEventsResponse",
-    # Event
-    "CashEventResponse",
     # Onboarding
     "OnboardingCreate",
     "OnboardingResponse",

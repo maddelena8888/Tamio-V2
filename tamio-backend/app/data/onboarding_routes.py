@@ -8,8 +8,8 @@ from app.database import get_db
 from app.data import models
 from app.data.onboarding import OnboardingCreate, OnboardingResponse
 from app.data.balances.schemas import CashPositionResponse
-from app.data.event_generator import generate_events_from_client, generate_events_from_bucket
 from app.data.migration import backfill_client_canonical_structure
+from app.services.obligations import ObligationService
 
 router = APIRouter()
 
@@ -145,15 +145,17 @@ async def complete_onboarding(
     for obligation in obligations:
         await db.refresh(obligation)
 
-    # Generate events from clients and buckets
-    total_events = 0
+    # Generate obligations from clients and buckets
+    obligation_service = ObligationService(db)
+    total_obligations = 0
+
     for client in clients:
-        await generate_events_from_client(db, client)
-        total_events += 1
+        await obligation_service.create_obligation_from_client(client)
+        total_obligations += 1
 
     for bucket in buckets:
-        await generate_events_from_bucket(db, bucket)
-        total_events += 1
+        await obligation_service.create_obligation_from_expense(bucket)
+        total_obligations += 1
 
     total_cash = sum(acc.balance for acc in accounts)
 
@@ -165,7 +167,7 @@ async def complete_onboarding(
         ),
         clients=clients,
         expenses=buckets,
-        total_generated_events=total_events
+        total_generated_events=total_obligations  # Now represents obligations, not events
     )
 
 

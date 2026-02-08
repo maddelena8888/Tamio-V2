@@ -14,6 +14,7 @@ import {
   ChartTooltip,
   type ChartConfig,
 } from '@/components/ui/chart';
+import { cn } from '@/lib/utils';
 import type { ForecastResponse } from '@/lib/api/types';
 import type { DangerZone, ImpactChartData } from './types';
 
@@ -24,6 +25,7 @@ interface ImpactVisualizationProps {
   bufferAmount: number;
   alertImpact?: number | null; // Cash amount the alert impacts (negative = reduces cash)
   impactWeek?: number; // Week when impact starts (defaults to alertWeek)
+  compact?: boolean; // Compact mode for modal/smaller containers
 }
 
 const chartConfig = {
@@ -63,6 +65,7 @@ export function ImpactVisualization({
   bufferAmount,
   alertImpact,
   impactWeek,
+  compact = false,
 }: ImpactVisualizationProps) {
   // The week when impact starts (defaults to alertWeek)
   const effectiveImpactWeek = impactWeek ?? alertWeek;
@@ -138,41 +141,55 @@ export function ImpactVisualization({
 
   return (
     <div
-      className="
-        relative
-        alert-hero-glass
-        rounded-3xl
-        p-8
-        shadow-[0_8px_32px_rgba(255,79,63,0.12),0_4px_16px_rgba(0,0,0,0.06)]
-      "
+      className={cn(
+        'relative alert-hero-glass rounded-3xl shadow-[0_8px_32px_rgba(255,79,63,0.12),0_4px_16px_rgba(0,0,0,0.06)]',
+        compact ? 'p-4' : 'p-8'
+      )}
     >
-      {/* Week label pill - shows the focus week */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-white/60 backdrop-blur-sm rounded-full border border-white/40">
-        <span className="text-sm font-semibold text-gunmetal">
-          Week {alertWeek}
-        </span>
-      </div>
-
-      {/* Legend */}
-      <div className="flex items-center justify-end gap-6 text-xs text-gunmetal mb-4 mt-2">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-2 bg-gunmetal rounded" />
-          <span>Current Forecast</span>
-        </div>
-        {showImpactScenario && (
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-0.5 border-b-2 border-dashed border-tomato" />
-            <span>If Alert Hits</span>
+      {/* Header with week pill and legend */}
+      <div className={cn(
+        'flex items-center mb-2',
+        compact ? 'justify-between' : 'justify-end'
+      )}>
+        {/* Week label pill - inline in compact mode */}
+        {compact ? (
+          <div className="px-3 py-1 bg-white/60 backdrop-blur-sm rounded-full border border-white/40">
+            <span className="text-xs font-semibold text-gunmetal">
+              Week {alertWeek}
+            </span>
+          </div>
+        ) : (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-white/60 backdrop-blur-sm rounded-full border border-white/40">
+            <span className="text-sm font-semibold text-gunmetal">
+              Week {alertWeek}
+            </span>
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-0.5 border-b-2 border-dotted border-gunmetal/50" />
-          <span>Cash Buffer</span>
+
+        {/* Legend */}
+        <div className={cn(
+          'flex items-center text-gunmetal',
+          compact ? 'gap-3 text-[10px]' : 'gap-6 text-xs'
+        )}>
+          <div className="flex items-center gap-1">
+            <div className={cn('bg-gunmetal rounded', compact ? 'w-4 h-1.5' : 'w-6 h-2')} />
+            <span>Forecast</span>
+          </div>
+          {showImpactScenario && (
+            <div className="flex items-center gap-1">
+              <div className={cn('border-b-2 border-dashed border-tomato', compact ? 'w-4' : 'w-6')} />
+              <span>Impact</span>
+            </div>
+          )}
+          <div className="flex items-center gap-1">
+            <div className={cn('border-b-2 border-dotted border-gunmetal/50', compact ? 'w-4' : 'w-6')} />
+            <span>Buffer</span>
+          </div>
         </div>
       </div>
 
       {/* Chart */}
-      <ChartContainer config={chartConfig} className="h-[350px] w-full">
+      <ChartContainer config={chartConfig} className={cn('w-full', compact ? 'h-[280px]' : 'h-[350px]')}>
         <ComposedChart
           data={zoomedData}
           margin={{ top: 20, right: 30, left: 20, bottom: 20 }}

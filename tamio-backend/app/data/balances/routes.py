@@ -13,6 +13,7 @@ from app.data.balances.schemas import (
     CashAccountsUpdate,
     CashPositionResponse,
 )
+from app.auth.dependencies import get_current_user
 
 router = APIRouter()
 
@@ -20,22 +21,15 @@ router = APIRouter()
 @router.post("/cash-position", response_model=CashPositionResponse)
 async def create_cash_position(
     data: CashPositionCreate,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create cash position (one or more accounts)."""
-    # Verify user exists
-    result = await db.execute(
-        select(models.User).where(models.User.id == data.user_id)
-    )
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Create accounts
+    """Create cash position (one or more accounts) for the authenticated user."""
+    # Create accounts using authenticated user's ID
     accounts = []
     for acc_data in data.accounts:
         account = models.CashAccount(
-            user_id=data.user_id,
+            user_id=current_user.id,
             account_name=acc_data.account_name,
             balance=acc_data.balance,
             currency=acc_data.currency,
@@ -58,12 +52,12 @@ async def create_cash_position(
 
 @router.get("/cash-position", response_model=CashPositionResponse)
 async def get_cash_position(
-    user_id: str = Query(...),
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get current cash position for a user."""
+    """Get current cash position for the authenticated user."""
     result = await db.execute(
-        select(models.CashAccount).where(models.CashAccount.user_id == user_id)
+        select(models.CashAccount).where(models.CashAccount.user_id == current_user.id)
     )
     accounts = result.scalars().all()
 
@@ -75,31 +69,23 @@ async def get_cash_position(
     )
 
 
-@router.put("/cash-accounts/{user_id}", response_model=CashPositionResponse)
+@router.put("/cash-accounts", response_model=CashPositionResponse)
 async def update_cash_accounts(
-    user_id: str,
     data: CashAccountsUpdate,
+    current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update cash accounts for a user (replaces all existing accounts)."""
-    # Verify user exists
-    result = await db.execute(
-        select(models.User).where(models.User.id == user_id)
-    )
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Delete existing accounts
+    """Update cash accounts for the authenticated user (replaces all existing accounts)."""
+    # Delete existing accounts for this user
     await db.execute(
-        delete(models.CashAccount).where(models.CashAccount.user_id == user_id)
+        delete(models.CashAccount).where(models.CashAccount.user_id == current_user.id)
     )
 
     # Create new accounts
     accounts = []
     for acc_data in data.accounts:
         account = models.CashAccount(
-            user_id=user_id,
+            user_id=current_user.id,
             account_name=acc_data.account_name,
             balance=acc_data.balance,
             currency=acc_data.currency,
