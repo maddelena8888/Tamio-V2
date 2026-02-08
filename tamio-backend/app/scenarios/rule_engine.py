@@ -142,6 +142,7 @@ async def _evaluate_minimum_cash_buffer(
         action_window_weeks=action_window_weeks,
         evaluation_details=evaluation_details
     )
+    evaluation.rule = rule  # Pre-populate to avoid lazy-load in async context
 
     return evaluation
 

@@ -44,10 +44,17 @@ async def build_context(
     Returns:
         ContextPayload with all deterministic data
     """
-    # Load user data
+    # Load user data — capture attributes immediately before heavy DB ops
+    # that may expire ORM objects in the session
     user = await _load_user(db, user_id)
     if not user:
         raise ValueError(f"User {user_id} not found")
+    user_profile = {
+        "industry": user.industry,
+        "subcategory": user.subcategory,
+        "revenue_range": user.revenue_range,
+        "base_currency": user.base_currency,
+    }
 
     # Load cash position
     cash_position = await _load_cash_position(db, user_id)
@@ -58,8 +65,20 @@ async def build_context(
     # Load buffer rule
     buffer_rule = await _load_buffer_rule(db, user_id)
 
-    # Evaluate rules on base forecast
+    # Evaluate rules on base forecast — capture attributes eagerly
     rule_evaluations = await evaluate_rules(db, user_id, base_forecast)
+    rule_statuses = [
+        RuleStatus(
+            rule_id=str(e.rule_id),
+            rule_type=e.rule.rule_type if e.rule else "unknown",
+            name=e.rule.name if e.rule else "Unknown Rule",
+            is_breached=e.is_breached,
+            severity=e.severity,
+            breach_week=e.first_breach_week,
+            action_window_weeks=e.action_window_weeks,
+        )
+        for e in rule_evaluations
+    ]
 
     # Load active scenarios
     active_scenarios = await _load_active_scenarios(db, user_id)
@@ -83,14 +102,14 @@ async def build_context(
     # Load active detection alerts (V4)
     active_alerts = await _load_active_alerts(db, user_id)
 
-    # Build business profile summary
+    # Build business profile summary (from eagerly captured user attributes)
     business_profile = None
-    if user.industry or user.revenue_range:
+    if user_profile["industry"] or user_profile["revenue_range"]:
         business_profile = BusinessProfileSummary(
-            industry=user.industry,
-            subcategory=user.subcategory,
-            revenue_range=user.revenue_range,
-            base_currency=user.base_currency,
+            industry=user_profile["industry"],
+            subcategory=user_profile["subcategory"],
+            revenue_range=user_profile["revenue_range"],
+            base_currency=user_profile["base_currency"],
         )
 
     # Build forecast weeks summary
@@ -104,20 +123,6 @@ async def build_context(
             net_change=w["net_change"],
         )
         for w in base_forecast.get("weeks", [])
-    ]
-
-    # Build rule status list
-    rule_statuses = [
-        RuleStatus(
-            rule_id=str(e.rule_id),
-            rule_type=e.rule.rule_type if e.rule else "unknown",
-            name=e.rule.name if e.rule else "Unknown Rule",
-            is_breached=e.is_breached,
-            severity=e.severity,
-            breach_week=e.first_breach_week,
-            action_window_weeks=e.action_window_weeks,
-        )
-        for e in rule_evaluations
     ]
 
     # Build context payload
@@ -210,13 +215,19 @@ async def _load_active_scenarios(
     )
     scenarios = result.scalars().all()
 
+    # Capture attributes eagerly before DB operations that may expire objects
+    scenario_data = [
+        (s.id, s.name, s.scenario_type, s.status, s.linked_scenarios or [])
+        for s in scenarios
+    ]
+
     summaries = []
-    for scenario in scenarios:
+    for sid, sname, stype, sstatus, slinked in scenario_data:
         # Get impact if we can compute it
         impact = None
         try:
             comparison = await compute_scenario_forecast(
-                db, user_id, scenario.id
+                db, user_id, sid
             )
             base_week13 = Decimal(comparison["base_forecast"]["weeks"][-1]["ending_balance"])
             scenario_week13 = Decimal(comparison["scenario_forecast"]["weeks"][-1]["ending_balance"])
@@ -225,12 +236,12 @@ async def _load_active_scenarios(
             pass
 
         summaries.append(ActiveScenarioSummary(
-            scenario_id=scenario.id,
-            name=scenario.name,
-            scenario_type=scenario.scenario_type,
-            status=scenario.status,
+            scenario_id=sid,
+            name=sname,
+            scenario_type=stype,
+            status=sstatus,
             impact_week_13=impact,
-            layers=scenario.linked_scenarios or [],
+            layers=slinked,
         ))
 
     return summaries
@@ -243,13 +254,19 @@ async def _load_current_scenario_context(
     base_forecast: Dict[str, Any]
 ) -> Optional[CurrentScenarioContext]:
     """Load detailed context for the currently active/viewed scenario."""
-    # Load the scenario
+    # Load the scenario — capture attributes before heavy DB operations
     result = await db.execute(
         select(Scenario).where(Scenario.id == scenario_id)
     )
     scenario = result.scalar_one_or_none()
     if not scenario:
         return None
+    s_id = scenario.id
+    s_name = scenario.name
+    s_type = scenario.scenario_type
+    s_status = scenario.status
+    s_params = scenario.parameters or {}
+    s_scope = scenario.scope_config or {}
 
     # Compute scenario forecast comparison
     try:
@@ -296,12 +313,12 @@ async def _load_current_scenario_context(
     ]
 
     return CurrentScenarioContext(
-        scenario_id=scenario.id,
-        name=scenario.name,
-        scenario_type=scenario.scenario_type,
-        status=scenario.status,
-        parameters=scenario.parameters or {},
-        scope_config=scenario.scope_config or {},
+        scenario_id=s_id,
+        name=s_name,
+        scenario_type=s_type,
+        status=s_status,
+        parameters=s_params,
+        scope_config=s_scope,
         impact_week_13=impact,
         scenario_ending_balance=str(scenario_week13),
         base_ending_balance=str(base_week13),

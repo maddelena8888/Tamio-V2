@@ -12,7 +12,7 @@ The orchestrator:
 from typing import Dict, Any, List, Optional, AsyncIterator
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, update
 
 from app.tami.schemas import (
     ChatRequest,
@@ -106,6 +106,7 @@ async def chat(
 
     # Step 3: Get or create conversation session
     session = await _get_or_create_session(db, request.user_id, session_id)
+    session_id_val = session.id  # Capture eagerly before DB ops expire the ORM object
 
     # Step 4: Build prompt with relevant knowledge (Agent1)
     prompt_data = build_prompt(
@@ -123,7 +124,7 @@ async def chat(
     # Step 5: Save user message to conversation
     await _save_message(
         db=db,
-        session_id=session.id,
+        session_id=session_id_val,
         role="user",
         content=request.message,
         detected_intent=detected_intent
@@ -193,7 +194,7 @@ async def chat(
     # Step 9: Save assistant message to conversation
     await _save_message(
         db=db,
-        session_id=session.id,
+        session_id=session_id_val,
         role="assistant",
         content=tami_response.message_markdown,
         mode=tami_response.mode.value,
@@ -201,8 +202,12 @@ async def chat(
         tool_calls=tool_calls_made if tool_calls_made else None
     )
 
-    # Update session last_message_at
-    session.last_message_at = datetime.utcnow()
+    # Update session last_message_at (use SQL update to avoid expired ORM object)
+    await db.execute(
+        update(ConversationSession)
+        .where(ConversationSession.id == session_id_val)
+        .values(last_message_at=datetime.utcnow())
+    )
     await db.flush()
 
     return ChatResponse(
@@ -214,7 +219,7 @@ async def chat(
             "active_scenarios_count": len(context.active_scenarios),
             "rules_evaluated": len(context.rule_evaluations),
             "detected_intent": detected_intent,
-            "session_id": session.id,
+            "session_id": session_id_val,
         },
         tool_calls_made=tool_calls_made
     )
