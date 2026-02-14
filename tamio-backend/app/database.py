@@ -3,9 +3,14 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import declarative_base
 from app.config import settings
 
+# Railway (and most providers) give postgresql:// but asyncpg needs postgresql+asyncpg://
+_db_url = settings.DATABASE_URL
+if _db_url.startswith("postgresql://"):
+    _db_url = _db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 # Create async engine
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    _db_url,
     echo=settings.APP_ENV == "development",
     future=True,
     pool_pre_ping=True,
