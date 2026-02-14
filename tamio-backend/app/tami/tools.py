@@ -18,7 +18,7 @@ from app.scenarios.rule_engine import (
     generate_decision_signals,
     suggest_scenarios as suggest_scenarios_engine,
 )
-from app.forecast.engine_v2 import calculate_forecast_v2 as calculate_13_week_forecast
+from app.forecast.engine_v2 import calculate_forecast_v2 as calculate_13_week_forecast, ScenarioContext
 from app.scenarios.pipeline.dependencies import get_suggested_scenarios as get_dependent_suggestions
 from app.scenarios.pipeline.types import ScenarioTypeEnum
 from sqlalchemy import select
@@ -197,6 +197,35 @@ TOOL_SCHEMAS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_concentration_risk",
+            "description": "Analyze client revenue concentration risk using HHI and show runway impact of losing top clients. Use when the user asks about client dependency, concentration risk, or revenue diversification.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_runway_impact": {
+                        "type": "boolean",
+                        "description": "Calculate runway impact for top clients (default true)"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_briefing",
+            "description": "Generate a prioritized briefing of the top 3 most important treasury items right now. Use when the user asks for a briefing, daily summary, status update, or 'what should I focus on today'.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]
 
@@ -240,6 +269,10 @@ async def dispatch_tool(
         return await _build_goal_scenarios(db, user_id, tool_args)
     elif tool_name == "check_payroll_safety":
         return await _check_payroll_safety(db, user_id, tool_args)
+    elif tool_name == "analyze_concentration_risk":
+        return await _analyze_concentration_risk(db, user_id, tool_args)
+    elif tool_name == "generate_briefing":
+        return await _generate_briefing(db, user_id, tool_args)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -532,7 +565,8 @@ async def _build_goal_scenarios(
 async def _compute_payroll_coverage(
     db: AsyncSession,
     user_id: str,
-    weeks_ahead: int = 4
+    weeks_ahead: int = 4,
+    forecast: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Compute payroll coverage using high-confidence inflows only.
@@ -570,8 +604,9 @@ async def _compute_payroll_coverage(
     else:
         per_period = total_monthly_payroll
 
-    # 2. Get forecast
-    forecast = await calculate_13_week_forecast(db, user_id)
+    # 2. Get forecast (accept pre-computed to avoid double calls from briefing)
+    if forecast is None:
+        forecast = await calculate_13_week_forecast(db, user_id)
     weeks = forecast.get("weeks", [])
 
     # 3. Layer 2: Find clients with overdue invoices
@@ -776,4 +811,562 @@ async def _check_payroll_safety(
         "success": True,
         **coverage,
         "message": message
+    }
+
+
+def _extract_billing_amount(billing_config: Optional[Dict[str, Any]]) -> float:
+    """Extract a monthly revenue estimate from billing_config JSONB."""
+    if not billing_config:
+        return 0.0
+    # Retainer: direct monthly amount
+    if "amount" in billing_config:
+        return float(billing_config["amount"])
+    # Usage-based: typical monthly amount
+    if "typical_amount" in billing_config:
+        return float(billing_config["typical_amount"])
+    # Project: total value / duration estimate
+    if "total_value" in billing_config:
+        months = float(billing_config.get("duration_months", 6))
+        return float(billing_config["total_value"]) / max(months, 1)
+    return 0.0
+
+
+async def _analyze_concentration_risk(
+    db: AsyncSession,
+    user_id: str,
+    args: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Analyze client revenue concentration using normalized HHI."""
+    include_runway_impact = args.get("include_runway_impact", True)
+
+    # 1. Load all active clients
+    result = await db.execute(
+        select(Client).where(
+            Client.user_id == user_id,
+            Client.status == "active"
+        )
+    )
+    clients = result.scalars().all()
+
+    # Capture ORM attributes into plain dicts before any heavy DB work
+    client_data = [
+        {
+            "id": c.id,
+            "name": c.name,
+            "revenue_percent": float(c.revenue_percent) if c.revenue_percent else 0.0,
+            "relationship_type": c.relationship_type or "managed",
+            "billing_config": c.billing_config,
+        }
+        for c in clients
+    ]
+
+    n = len(client_data)
+
+    # Edge case: no clients
+    if n == 0:
+        return {
+            "success": True,
+            "risk_level": "unknown",
+            "portfolio_size": 0,
+            "message": "No active clients found.",
+        }
+
+    # Edge case: single client
+    if n == 1:
+        c = client_data[0]
+        return {
+            "success": True,
+            "raw_hhi": 10000,
+            "normalized_hhi": 1.0,
+            "risk_level": "high",
+            "portfolio_size": 1,
+            "thresholds": {"moderate": 0.15, "high": 0.35},
+            "top_client_share_pct": 100.0,
+            "top_3_share_pct": 100.0,
+            "top_clients": [{
+                "client_id": c["id"],
+                "name": c["name"],
+                "revenue_share_pct": 100.0,
+                "relationship_type": c["relationship_type"],
+                "hhi_contribution": 10000.0,
+            }],
+            "message": (
+                f"Single-client portfolio — total dependency on {c['name']}. "
+                f"Concentration risk is HIGH."
+            ),
+        }
+
+    # 2. Normalize revenue percents to sum to 100
+    # If any client has revenue_percent=0, fall back to billing_config amounts
+    total_raw = sum(c["revenue_percent"] for c in client_data)
+
+    if total_raw <= 0:
+        # Fall back to billing_config amounts
+        for c in client_data:
+            c["revenue_percent"] = _extract_billing_amount(c["billing_config"])
+        total_raw = sum(c["revenue_percent"] for c in client_data)
+
+    if total_raw <= 0:
+        return {
+            "success": True,
+            "risk_level": "unknown",
+            "portfolio_size": n,
+            "message": "Could not determine revenue distribution — no revenue_percent or billing_config data.",
+        }
+
+    # Normalize so shares sum to exactly 100
+    for c in client_data:
+        c["normalized_share"] = (c["revenue_percent"] / total_raw) * 100.0
+
+    # 3. Compute raw HHI (scale 0–10000)
+    raw_hhi = sum(c["normalized_share"] ** 2 for c in client_data)
+
+    # 4. Compute normalized HHI* (0–1)
+    min_hhi = 10000.0 / n
+    hhi_star = (raw_hhi - min_hhi) / (10000.0 - min_hhi)
+
+    # 5. Classify risk level
+    if hhi_star < 0.15:
+        risk_level = "low"
+    elif hhi_star < 0.35:
+        risk_level = "moderate"
+    else:
+        risk_level = "high"
+
+    # 6. Portfolio size floor: small portfolios are inherently concentrated
+    size_note = ""
+    if n <= 3 and risk_level == "low":
+        risk_level = "moderate"
+        size_note = f" Small portfolio ({n} clients) — inherently concentrated regardless of revenue split."
+
+    # 7. Top clients by revenue share
+    sorted_clients = sorted(client_data, key=lambda c: c["normalized_share"], reverse=True)
+    top_3 = sorted_clients[:3]
+    top_client_share = top_3[0]["normalized_share"]
+    top_3_share = sum(c["normalized_share"] for c in top_3)
+
+    # 8. Build top_clients list with HHI contribution
+    top_clients_result = []
+    for c in top_3:
+        entry: Dict[str, Any] = {
+            "client_id": c["id"],
+            "name": c["name"],
+            "revenue_share_pct": round(c["normalized_share"], 1),
+            "relationship_type": c["relationship_type"],
+            "hhi_contribution": round(c["normalized_share"] ** 2, 1),
+        }
+        top_clients_result.append(entry)
+
+    # 9. Runway impact (optional, default True)
+    if include_runway_impact:
+        base_forecast = await calculate_13_week_forecast(db, user_id)
+        base_runway = base_forecast.get("summary", {}).get("runway_weeks", 13)
+
+        for entry in top_clients_result:
+            excluded_forecast = await calculate_13_week_forecast(
+                db, user_id,
+                scenario_context=ScenarioContext(excluded_client_ids=[entry["client_id"]])
+            )
+            excluded_runway = excluded_forecast.get("summary", {}).get("runway_weeks", 13)
+            weeks_lost = base_runway - excluded_runway
+
+            impact: Dict[str, Any] = {
+                "base_runway_weeks": base_runway,
+                "without_client_weeks": excluded_runway,
+                "weeks_lost": weeks_lost,
+            }
+
+            # Caveat: if weeks_lost is 0 for a high-revenue client, the forecast
+            # may not have obligation data for this client
+            if weeks_lost == 0 and entry["revenue_share_pct"] > 10.0:
+                impact["note"] = "No obligation data — runway impact may be understated"
+
+            entry["runway_impact"] = impact
+
+    # 10. Build message
+    risk_display = risk_level.upper()
+    message = (
+        f"Concentration risk is {risk_display} (HHI*: {hhi_star:.2f}). "
+        f"Top 3 clients = {top_3_share:.1f}% of revenue."
+    )
+
+    # Add runway impact to message if available
+    if include_runway_impact and top_clients_result:
+        top = top_clients_result[0]
+        impact = top.get("runway_impact", {})
+        weeks_lost = impact.get("weeks_lost", 0)
+        if weeks_lost > 0:
+            message += f" Losing {top['name']} would reduce runway by {weeks_lost} weeks."
+        elif top["revenue_share_pct"] > 10.0:
+            message += f" Losing {top['name']} ({top['revenue_share_pct']:.0f}% of revenue) — runway impact not modeled in obligations."
+
+    if size_note:
+        message += size_note
+
+    return {
+        "success": True,
+        "raw_hhi": round(raw_hhi, 1),
+        "normalized_hhi": round(hhi_star, 3),
+        "risk_level": risk_level,
+        "portfolio_size": n,
+        "thresholds": {"moderate": 0.15, "high": 0.35},
+        "top_client_share_pct": round(top_client_share, 1),
+        "top_3_share_pct": round(top_3_share, 1),
+        "top_clients": top_clients_result,
+        "message": message,
+    }
+
+
+# ============================================================================
+# SHARED HELPER — Overdue invoices
+# ============================================================================
+
+async def _query_overdue_invoices(db: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+    """
+    Overdue invoices aggregated by client. Returns plain dicts (JSON-safe).
+
+    Shared between generate_briefing (priority scoring) and draft_collection_message (future).
+    Per-client aggregation: sums amounts, takes max days_overdue.
+    """
+    result = await db.execute(
+        select(
+            ObligationSchedule.estimated_amount,
+            ObligationSchedule.due_date,
+            ObligationAgreement.client_id,
+            Client.name,
+            Client.relationship_type,
+        )
+        .join(ObligationAgreement)
+        .join(Client, Client.id == ObligationAgreement.client_id)
+        .where(
+            ObligationAgreement.user_id == user_id,
+            ObligationAgreement.client_id.isnot(None),
+            ObligationSchedule.status == "overdue"
+        )
+    )
+    rows = result.all()
+
+    today = date.today()
+    by_client: Dict[str, Dict[str, Any]] = {}
+    for amount, due_date, client_id, client_name, relationship_type in rows:
+        if client_id not in by_client:
+            by_client[client_id] = {
+                "client_id": client_id,
+                "client_name": client_name,
+                "relationship_type": relationship_type or "managed",
+                "total_overdue_amount": 0.0,
+                "days_overdue": 0,
+                "invoice_count": 0,
+            }
+        by_client[client_id]["total_overdue_amount"] += float(amount or 0)
+        days = (today - due_date).days
+        by_client[client_id]["days_overdue"] = max(by_client[client_id]["days_overdue"], days)
+        by_client[client_id]["invoice_count"] += 1
+
+    return list(by_client.values())
+
+
+# ============================================================================
+# BRIEFING — Scoring and item builders
+# ============================================================================
+
+# Scoring constants
+_PAYROLL_RISK_SCORE = 10000
+_OVERDUE_BASE = 200
+_OVERDUE_DAYS_FACTOR = 10       # points per day overdue, capped at 200
+_OVERDUE_AMOUNT_DIVISOR = 1000  # $52.5K → 52.5 points, capped at 200
+_OVERDUE_CAP = 999
+_RELATIONSHIP_MOD = {"transactional": 1.2, "managed": 1.0, "strategic": 0.8}
+_RULE_BREACH_BASE = {"red": 350, "amber": 150}
+_RULE_URGENCY_BONUS = 100       # when action_window <= 2 weeks
+_CONCENTRATION_SCORE = {"high": 80, "moderate": 40}
+_BRIEFING_MAX_ITEMS = 3
+
+
+def _score_overdue_invoice(inv: Dict[str, Any]) -> float:
+    """Score an overdue invoice for briefing priority. Days dominate, amount matters, relationship adjusts."""
+    base = _OVERDUE_BASE
+    days_bonus = min(inv["days_overdue"] * _OVERDUE_DAYS_FACTOR, 200)
+    amount_bonus = min(inv["total_overdue_amount"] / _OVERDUE_AMOUNT_DIVISOR, 200)
+    rel_mod = _RELATIONSHIP_MOD.get(inv.get("relationship_type", "managed"), 1.0)
+    return min((base + days_bonus + amount_bonus) * rel_mod, _OVERDUE_CAP)
+
+
+def _build_payroll_item(payroll: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a briefing item for payroll risk."""
+    status = payroll["overall_status"]
+    risk_week = payroll.get("first_risk_week")
+    ps = payroll.get("payroll_summary", {})
+    amount = ps.get("per_period_amount", "0")
+    freq = ps.get("frequency", "monthly").replace("_", " ")
+
+    if status == "shortfall":
+        headline = f"Payroll shortfall in week {risk_week}"
+        detail = f"Even medium-confidence inflows may not cover {freq} payroll of ${Decimal(amount):,.0f}."
+        severity = "red"
+    else:
+        headline = f"Payroll coverage at risk in week {risk_week}"
+        detail = f"High-confidence inflows alone don't cover {freq} payroll of ${Decimal(amount):,.0f}."
+        severity = "amber"
+
+    return {
+        "priority_score": _PAYROLL_RISK_SCORE,
+        "category": "payroll_risk",
+        "headline": headline,
+        "detail": detail,
+        "severity": severity,
+        "next_action": {
+            "label": "Review payroll coverage details",
+            "tool_name": "check_payroll_safety",
+            "tool_args": {"weeks_ahead": 4},
+        },
+    }
+
+
+def _build_overdue_item(inv: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a briefing item for an overdue invoice."""
+    score = _score_overdue_invoice(inv)
+    amount = inv["total_overdue_amount"]
+    days = inv["days_overdue"]
+    name = inv["client_name"]
+    count = inv.get("invoice_count", 1)
+
+    headline = f"{name} is {days} days late on ${amount:,.0f}"
+    if count > 1:
+        detail = f"{count} overdue invoices totaling ${amount:,.0f}. Relationship: {inv['relationship_type']}."
+    else:
+        detail = f"Single invoice, {inv['relationship_type']} client."
+
+    return {
+        "priority_score": score,
+        "category": "overdue_invoice",
+        "headline": headline,
+        "detail": detail,
+        "severity": "red" if days >= 14 else "amber",
+        "next_action": {
+            "label": f"Draft a follow-up for {name}",
+            "tool_name": "draft_collection_message",
+            "tool_args": {
+                "client_name": name,
+                "overdue_amount": amount,
+                "days_overdue": days,
+            },
+        },
+    }
+
+
+def _build_rule_breach_item(evaluation: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a briefing item for a rule breach."""
+    severity = evaluation.get("severity", "amber")
+    base = _RULE_BREACH_BASE.get(severity, 150)
+    action_window = evaluation.get("action_window_weeks")
+    urgency = _RULE_URGENCY_BONUS if action_window is not None and action_window <= 2 else 0
+    score = min(base + urgency, _OVERDUE_CAP)
+
+    breach_week = evaluation.get("breach_week")
+    name = evaluation.get("name", "Cash buffer rule")
+
+    headline = f"{name} breaches in week {breach_week}" if breach_week else f"{name} breached"
+    if action_window is not None:
+        detail = f"{action_window} weeks to take action. Severity: {severity}."
+    else:
+        detail = f"Severity: {severity}."
+
+    return {
+        "priority_score": score,
+        "category": "rule_breach",
+        "headline": headline,
+        "detail": detail,
+        "severity": severity,
+        "next_action": {
+            "label": "Model scenarios to restore buffer",
+            "tool_name": "plan_build_goal_scenarios",
+            "tool_args": {"goal": "restore cash buffer"},
+        },
+    }
+
+
+def _build_concentration_item(concentration: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a briefing item for concentration risk."""
+    risk_level = concentration.get("risk_level", "moderate")
+    score = _CONCENTRATION_SCORE.get(risk_level, 40)
+    top_share = concentration.get("top_client_share_pct", 0)
+    top_clients = concentration.get("top_clients", [])
+    top_name = top_clients[0]["name"] if top_clients else "Top client"
+
+    headline = f"Top client ({top_name}) represents {top_share:.0f}% of revenue"
+    detail = f"Concentration risk is {risk_level}. HHI*: {concentration.get('normalized_hhi', 0):.2f}."
+
+    return {
+        "priority_score": score,
+        "category": "concentration_risk",
+        "headline": headline,
+        "detail": detail,
+        "severity": "amber" if risk_level == "moderate" else "red",
+        "next_action": {
+            "label": "Run full concentration analysis",
+            "tool_name": "analyze_concentration_risk",
+            "tool_args": {},
+        },
+    }
+
+
+def _build_runway_item(runway_weeks: int) -> Dict[str, Any]:
+    """Build a briefing item for runway warning. Two tiers: existential (<= 4w) and concerning (5-7w)."""
+    if runway_weeks <= 4:
+        # Existential: always above overdue invoices, below payroll
+        score = 800 + (4 - runway_weeks) * 200
+        severity = "red"
+        detail = f"Cash may run out in {runway_weeks} weeks."
+    else:
+        # Concerning: can be outranked by overdue invoices
+        score = 60 + (8 - runway_weeks) * 30
+        severity = "amber"
+        detail = "Cash runway is below the 8-week safety threshold."
+
+    return {
+        "priority_score": score,
+        "category": "runway_warning",
+        "headline": f"Runway is {runway_weeks} weeks",
+        "detail": detail,
+        "severity": severity,
+        "next_action": {
+            "label": "Explore runway extension scenarios",
+            "tool_name": "plan_build_goal_scenarios",
+            "tool_args": {"goal": "extend runway"},
+        },
+    }
+
+
+# ============================================================================
+# BRIEFING — Main handler
+# ============================================================================
+
+async def _generate_briefing(
+    db: AsyncSession,
+    user_id: str,
+    args: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Generate a prioritized briefing of the top 3 treasury items.
+
+    Scoring tiers:
+    - 10000: Payroll at-risk (always #1 when present)
+    - 800-1600: Runway <= 4 weeks (existential)
+    - 200-999: Overdue invoices, rule breaches
+    - 60-150: Runway 5-7 weeks
+    - 40-80: Concentration risk
+
+    Each category is evaluated independently — partial failures return
+    partial results rather than failing the entire briefing.
+    """
+    # Forecast is the foundation — if this fails, nothing works
+    try:
+        forecast = await calculate_13_week_forecast(db, user_id)
+    except Exception as e:
+        return {"success": False, "error": f"Could not compute forecast: {str(e)}"}
+
+    candidates: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    # --- Payroll ---
+    payroll_status = "safe"
+    try:
+        payroll = await _compute_payroll_coverage(db, user_id, forecast=forecast)
+        if payroll.get("has_payroll"):
+            payroll_status = payroll.get("overall_status", "safe")
+            if payroll_status != "safe":
+                candidates.append(_build_payroll_item(payroll))
+    except Exception as e:
+        errors.append(f"payroll: {str(e)}")
+        payroll_status = "unknown"
+
+    # --- Overdue invoices ---
+    total_overdue = 0.0
+    overdue_count = 0
+    try:
+        overdue = await _query_overdue_invoices(db, user_id)
+        for inv in overdue:
+            candidates.append(_build_overdue_item(inv))
+            total_overdue += inv["total_overdue_amount"]
+            overdue_count += inv["invoice_count"]
+    except Exception as e:
+        errors.append(f"overdue: {str(e)}")
+
+    # --- Rule breaches ---
+    try:
+        rule_evals = await evaluate_rules(db, user_id, forecast)
+        for ev in rule_evals:
+            if ev.is_breached:
+                candidates.append(_build_rule_breach_item({
+                    "severity": ev.severity,
+                    "breach_week": ev.breach_week,
+                    "action_window_weeks": ev.action_window_weeks,
+                    "name": ev.name,
+                }))
+    except Exception as e:
+        errors.append(f"rules: {str(e)}")
+
+    # --- Concentration risk ---
+    concentration_risk = "unknown"
+    try:
+        concentration = await _analyze_concentration_risk(
+            db, user_id, {"include_runway_impact": False}
+        )
+        concentration_risk = concentration.get("risk_level", "unknown")
+        if concentration_risk in ("moderate", "high"):
+            candidates.append(_build_concentration_item(concentration))
+    except Exception as e:
+        errors.append(f"concentration: {str(e)}")
+
+    # --- Runway warning ---
+    runway_weeks = forecast.get("summary", {}).get("runway_weeks", 13)
+    if runway_weeks < 8:
+        candidates.append(_build_runway_item(runway_weeks))
+
+    # Sort by priority and hard-cap at 3
+    candidates.sort(key=lambda x: x["priority_score"], reverse=True)
+    items = candidates[:_BRIEFING_MAX_ITEMS]
+
+    for i, item in enumerate(items):
+        item["priority_rank"] = i + 1
+
+    # Summary snapshot
+    starting_cash = forecast.get("starting_cash", "0")
+    summary = {
+        "as_of_date": str(date.today()),
+        "starting_cash": float(Decimal(str(starting_cash))),
+        "runway_weeks": runway_weeks,
+        "total_overdue": total_overdue,
+        "overdue_count": overdue_count,
+        "payroll_status": payroll_status,
+        "concentration_risk": concentration_risk,
+    }
+
+    # Human-readable message
+    if not items:
+        message = (
+            "No urgent items. Payroll is covered, no overdue invoices, "
+            "and cash buffer rules are holding."
+        )
+    else:
+        parts = [
+            f"{len(items)} item{'s' if len(items) > 1 else ''} "
+            f"need{'s' if len(items) == 1 else ''} attention."
+        ]
+        for item in items:
+            parts.append(item["headline"] + ".")
+        message = " ".join(parts)
+
+    if errors:
+        message += (
+            f" (Partial results — could not evaluate: "
+            f"{', '.join(e.split(':')[0] for e in errors)})"
+        )
+
+    return {
+        "success": True,
+        "items": items,
+        "summary": summary,
+        "message": message,
     }

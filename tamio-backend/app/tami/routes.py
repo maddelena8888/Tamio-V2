@@ -370,3 +370,36 @@ async def get_tami_context(
             status_code=500,
             detail=f"Error building context: {str(e)}"
         )
+
+
+# ============================================================================
+# BRIEFING ENDPOINT
+# ============================================================================
+
+@router.get("/briefing")
+async def get_briefing(
+    user_id: str = Query(..., description="User ID to generate briefing for"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate a prioritized briefing of the top 3 treasury items.
+
+    Returns the same data as the generate_briefing tool but as a direct
+    REST endpoint for dashboard widgets and programmatic access.
+    """
+    try:
+        from app.tami.tools import _generate_briefing
+        result = await _generate_briefing(db, user_id, {})
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Briefing generation failed")
+            )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating briefing: {str(e)}"
+        )

@@ -32,10 +32,11 @@ from app.tami.agent2_responder import (
     call_openai,
     call_openai_streaming,
     generate_response,
+    generate_response_streaming,
     parse_response,
     create_fallback_response,
 )
-from app.tami.tools import dispatch_tool
+from app.tami.tools import dispatch_tool, get_tool_schemas
 from app.tami.models import ConversationSession, ConversationMessage, UserActivity
 from app.tami.intent import Intent, should_use_fast_model
 from app.tami.cache import context_cache
@@ -57,6 +58,9 @@ def _intent_to_mode(intent: Intent) -> str:
         Intent.CHECK_STATUS: "explain_forecast",
         Intent.CHECK_RUNWAY: "explain_forecast",
         Intent.CHECK_CASH: "explain_forecast",
+        Intent.CHECK_PAYROLL: "explain_forecast",
+        Intent.CHECK_CONCENTRATION: "explain_forecast",
+        Intent.GENERATE_BRIEFING: "explain_forecast",
         Intent.GREETING: "explain_forecast",
         Intent.HELP: "clarify",
         Intent.GENERAL_QUESTION: "explain_forecast",
@@ -288,19 +292,66 @@ async def chat_streaming(
     use_fast = should_use_fast_model(intent_enum, intent_confidence)
 
     # Step 5: Save user message
+    session_id_val = session.id  # Capture eagerly before DB ops expire ORM object
     await _save_message(
         db=db,
-        session_id=session.id,
+        session_id=session_id_val,
         role="user",
         content=request.message,
         detected_intent=detected_intent
     )
 
-    # Step 6: Stream response from OpenAI (use fast model for simple queries)
+    # Step 6: Generate response — tool-calling path for complex intents,
+    # direct streaming for simple intents.
     full_content = ""
-    async for chunk in call_openai_streaming(messages, tools, use_fast_model=use_fast):
-        full_content += chunk
-        yield {"type": "chunk", "content": chunk}
+    tool_calls_made = []
+
+    if not use_fast:
+        # Complex intent: may need tool calling.
+        # Use non-streaming initial call WITH tool schemas so the LLM
+        # can decide whether to invoke a tool.
+        tool_schemas = get_tool_schemas()
+        response_content, tool_call = await call_openai(
+            messages=messages,
+            tools=tool_schemas,
+        )
+
+        if tool_call:
+            # Execute the tool
+            tool_result = await dispatch_tool(
+                db=db,
+                user_id=request.user_id,
+                tool_name=tool_call["name"],
+                tool_args=tool_call["arguments"]
+            )
+            tool_calls_made.append({
+                "tool_name": tool_call["name"],
+                "tool_args": tool_call["arguments"],
+                "result": tool_result
+            })
+
+            # Stream the final explanation of the tool result
+            async for chunk in generate_response_streaming(
+                messages=messages,
+                tools=tool_schemas,
+                tool_result={
+                    "tool_call_id": tool_call["id"],
+                    "tool_name": tool_call["name"],
+                    "tool_args": tool_call["arguments"],
+                    "result": tool_result,
+                }
+            ):
+                full_content += chunk
+                yield {"type": "chunk", "content": chunk}
+        else:
+            # LLM chose not to call a tool — yield the text response
+            full_content = response_content or ""
+            yield {"type": "chunk", "content": full_content}
+    else:
+        # Simple intent: stream directly (existing behavior)
+        async for chunk in call_openai_streaming(messages, tools, use_fast_model=use_fast):
+            full_content += chunk
+            yield {"type": "chunk", "content": chunk}
 
     # Step 7: Derive mode from intent (since streaming returns plain text, not JSON)
     mode = _intent_to_mode(intent_enum)
@@ -308,15 +359,20 @@ async def chat_streaming(
     # Step 8: Save assistant message
     await _save_message(
         db=db,
-        session_id=session.id,
+        session_id=session_id_val,
         role="assistant",
         content=full_content,
         mode=mode,
         ui_hints=None,  # No UI hints in streaming mode
+        tool_calls=tool_calls_made if tool_calls_made else None,
     )
 
-    # Update session
-    session.last_message_at = datetime.utcnow()
+    # Update session last_message_at (use SQL update to avoid expired ORM object)
+    await db.execute(
+        update(ConversationSession)
+        .where(ConversationSession.id == session_id_val)
+        .values(last_message_at=datetime.utcnow())
+    )
     await db.flush()
 
     # Step 9: Yield final metadata
@@ -328,7 +384,7 @@ async def chat_streaming(
             "user_id": context.user_id,
             "runway_weeks": context.runway_weeks,
             "detected_intent": detected_intent,
-            "session_id": session.id,
+            "session_id": session_id_val,
         }
     }
 

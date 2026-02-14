@@ -28,6 +28,11 @@ class Intent(str, Enum):
     CHECK_RUNWAY = "check_runway"
     CHECK_CASH = "check_cash"
 
+    # Operational tool intents
+    CHECK_PAYROLL = "check_payroll"
+    CHECK_CONCENTRATION = "check_concentration"
+    GENERATE_BRIEFING = "generate_briefing"
+
     # General
     GREETING = "greeting"
     HELP = "help"
@@ -61,6 +66,23 @@ INTENT_PATTERNS: List[Tuple[str, Intent, int]] = [
     (r"\b(risk|danger|warning|breach|red|amber|green)\b", Intent.EXPLAIN_RISK, 75),
     (r"\b(is|am) (i|we|my) (safe|at risk|in trouble)\b", Intent.EXPLAIN_RISK, 75),
     (r"\bbuffer\b", Intent.EXPLAIN_RISK, 70),
+
+    # Operational tool intents (high priority — these trigger tool calls)
+    (r"\bpayroll\b", Intent.CHECK_PAYROLL, 80),
+    (r"\bmake payroll\b", Intent.CHECK_PAYROLL, 85),
+    (r"\bpayroll (safe|safety|cover|covered)\b", Intent.CHECK_PAYROLL, 85),
+
+    (r"\bconcentration (risk|analysis)\b", Intent.CHECK_CONCENTRATION, 85),
+    (r"\bclient (concentration|dependency|diversif)", Intent.CHECK_CONCENTRATION, 85),
+    (r"\brevenue (concentration|diversif|dependent)", Intent.CHECK_CONCENTRATION, 85),
+    (r"\bdiversif\w*\b.*\b(revenue|client)", Intent.CHECK_CONCENTRATION, 80),
+    (r"\bhhi\b", Intent.CHECK_CONCENTRATION, 80),
+
+    (r"\bbriefing\b", Intent.GENERATE_BRIEFING, 85),
+    (r"\bbrief me\b", Intent.GENERATE_BRIEFING, 85),
+    (r"\bwhat should i (know|care about|focus on|prioritize)\b", Intent.GENERATE_BRIEFING, 80),
+    (r"\b(morning|daily) (update|summary|brief)\b", Intent.GENERATE_BRIEFING, 85),
+    (r"\btop (priorities|items|concerns)\b", Intent.GENERATE_BRIEFING, 80),
 
     # Cash and runway queries
     (r"\brunway\b", Intent.CHECK_RUNWAY, 70),
@@ -254,6 +276,18 @@ def get_relevant_knowledge_keys(intent: Intent, keywords: List[str]) -> Dict[str
         keys["glossary_terms"].extend(["cash_position", "opening_balance"])
         keys["features"].append("cash_tracking")
 
+    elif intent == Intent.CHECK_PAYROLL:
+        keys["glossary_terms"].extend(["payroll", "expense_bucket"])
+        keys["best_practice_categories"].append("risk_management")
+
+    elif intent == Intent.CHECK_CONCENTRATION:
+        keys["glossary_terms"].extend(["client", "revenue", "concentration_risk"])
+        keys["best_practice_categories"].append("risk_management")
+
+    elif intent == Intent.GENERATE_BRIEFING:
+        keys["glossary_terms"].extend(["payroll", "runway", "cash_position"])
+        keys["best_practice_categories"].append("risk_management")
+
     elif intent == Intent.HELP:
         keys["features"].append("tami_assistant")
         keys["situations"].append("first_time_user")
@@ -276,6 +310,9 @@ def get_intent_description(intent: Intent) -> str:
         Intent.CHECK_STATUS: "Checking overall financial status",
         Intent.CHECK_RUNWAY: "Checking cash runway",
         Intent.CHECK_CASH: "Checking cash position",
+        Intent.CHECK_PAYROLL: "Checking payroll coverage safety",
+        Intent.CHECK_CONCENTRATION: "Analyzing client concentration risk",
+        Intent.GENERATE_BRIEFING: "Generating prioritized briefing",
         Intent.GREETING: "Responding to greeting",
         Intent.HELP: "Providing help and guidance",
         Intent.GENERAL_QUESTION: "Answering a general question",
@@ -321,12 +358,15 @@ def should_use_fast_model(intent: Intent, confidence: float) -> bool:
     if intent in simple_status_intents and confidence >= 0.7:
         return True
 
-    # Use full model for complex operations
+    # Use full model for complex operations (tool calling needed)
     complex_intents = {
         Intent.CREATE_SCENARIO,
         Intent.MODIFY_SCENARIO,
         Intent.COMPARE_SCENARIOS,
         Intent.GOAL_PLANNING,
+        Intent.CHECK_PAYROLL,
+        Intent.CHECK_CONCENTRATION,
+        Intent.GENERATE_BRIEFING,
     }
 
     if intent in complex_intents:

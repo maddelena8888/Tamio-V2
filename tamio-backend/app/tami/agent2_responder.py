@@ -231,6 +231,60 @@ async def generate_response(
         return json.dumps(error_response)
 
 
+async def generate_response_streaming(
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    tool_result: Optional[Dict[str, Any]] = None,
+) -> AsyncIterator[str]:
+    """
+    Streaming version of generate_response().
+
+    After a tool call is executed, streams the final explanation
+    to the user. Uses the same message construction as generate_response()
+    but yields chunks via streaming.
+    """
+    client = get_anthropic_client()
+
+    # Extract system message
+    system_content, conversation_messages = _extract_system_message(messages)
+
+    # If we have a tool result, add it to messages in Anthropic format
+    if tool_result:
+        conversation_messages.append({
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": tool_result["tool_call_id"],
+                "name": tool_result["tool_name"],
+                "input": tool_result["tool_args"]
+            }]
+        })
+        conversation_messages.append({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_result["tool_call_id"],
+                "content": json.dumps(tool_result["result"])
+            }]
+        })
+
+    kwargs = {
+        "model": settings.ANTHROPIC_MODEL,
+        "max_tokens": settings.ANTHROPIC_MAX_TOKENS,
+        "messages": conversation_messages,
+    }
+
+    if system_content:
+        kwargs["system"] = system_content
+
+    try:
+        async with client.messages.stream(**kwargs) as stream:
+            async for text in stream.text_stream:
+                yield text
+    except Exception as e:
+        yield f"Error: {str(e)}"
+
+
 def parse_response(response_content: str) -> TAMIResponse:
     """
     Parse the Anthropic response into a TAMIResponse object.

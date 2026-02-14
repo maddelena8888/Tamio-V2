@@ -30,6 +30,8 @@ Note: `/home` redirects to `/`, `/clients` redirects to `/ledger`. See `src/rout
 
 3. **Trace the router before editing a page.** When the user asks for changes to a specific page (e.g., "canvas page", "dashboard", "home"), first trace the router to find which component file is rendered for that route before editing anything. Page names don't always match component filenames.
 
+4. **Eagerly capture ORM attributes before heavy DB operations.** `compute_scenario_forecast` (and similar heavy async calls) expire all ORM objects in the AsyncSession, even with `expire_on_commit=False`. Accessing expired attributes triggers a lazy load → `MissingGreenlet` error in async context. **Fix pattern**: capture ORM attributes into plain Python variables (dicts, tuples, strings) immediately after loading, BEFORE calling any `await` that does heavy DB work. See `context.py`, `orchestrator.py` for examples. This applies to any code path that loads ORM objects then calls forecast/scenario computation.
+
 ## Communication style
 
 Keep initial plans and responses concise. When presenting options or plans, start with 3 or fewer unless asked for more. Avoid overly broad output — the user prefers iterative refinement over comprehensive first drafts.
@@ -107,7 +109,11 @@ TAMI is an AI treasury assistant for SMB CFOs (agencies, consultancies, service 
 
 ## Tool design conventions
 
-There are 5 tools in `app/tami/tools.py`. All follow the same pattern:
+Tools live in `app/tami/tools.py`. Two categories:
+
+**Scenario tools** (5 — closed set): `scenario_create_or_update_layer`, `scenario_iterate_layer`, `scenario_discard_layer`, `scenario_get_suggestions`, `plan_build_goal_scenarios`. These create/modify virtual scenario overlays. Don't add more scenario tools — extend the engine instead.
+
+**Operational tools** (expanding set): `check_payroll_safety`, `draft_collection_message`, `analyze_concentration_risk`, `generate_briefing`. These are **read-only** — they query data and return analysis. Self-contained, no chaining needed (`MAX_TOOL_LOOPS = 1` still holds).
 
 **Schema format** — OpenAI function calling format (converted to Anthropic format by `agent2_responder._convert_tools_to_anthropic_format()`):
 ```python
@@ -128,17 +134,51 @@ There are 5 tools in `app/tami/tools.py`. All follow the same pattern:
 **Dispatch** — `dispatch_tool(db, user_id, tool_name, tool_args)` uses a simple if-elif chain routing to private handler functions (`_create_or_update_layer`, `_iterate_layer`, etc.). Unknown tools return `{"error": f"Unknown tool: {tool_name}"}`.
 
 **Result structure** — all tools return `Dict[str, Any]` with:
-- Success: `{"success": True, "scenario_id": "...", "message": "...", ...additional_data}`
+- Success: `{"success": True, "message": "...", ...additional_data}`
 - Failure: `{"success": False, "error": "..."}`
 
 **Tool results are INVISIBLE to users.** They flow back into Claude via `generate_response()`, which adds the tool_use + tool_result to the message history and calls Claude again WITHOUT tools. Claude then generates a natural language explanation. The user only sees markdown — never raw tool output.
 
-**When adding a new tool:**
+**When adding a new operational tool:**
 1. Add schema to `TOOL_SCHEMAS` list in `tools.py`
 2. Add elif branch in `dispatch_tool()`
 3. Implement private handler function `_your_handler(db, user_id, args)`
 4. Return result dict matching the success/failure pattern above
-5. The orchestrator and responder handle the rest — no changes needed there
+5. Add intent enum + patterns to `intent.py` (see "Intent wiring" below)
+6. Add `_intent_to_mode` mapping in `orchestrator.py`
+7. Add intent to `complex_intents` in `should_use_fast_model()` (operational tools need the full model)
+8. Write tests in `tests/tami/test_operational_tools.py`
+
+### Operational tool patterns
+
+Established conventions from `check_payroll_safety`:
+
+**Shared helpers** — if two tools need the same computation, extract a `_compute_*()` helper. Example: `_compute_payroll_coverage()` is shared between `check_payroll_safety` and `generate_briefing`. Place shared helpers in the `# OPERATIONAL TOOLS` section of `tools.py`, before the tool handler functions.
+
+**Data access** — operational tools reuse existing models and engines:
+- Forecast data: `calculate_13_week_forecast(db, user_id)` (already imported)
+- Clients: `Client` model from `app.data.clients.models`
+- Expenses: `ExpenseBucket` model from `app.data.expenses.models`
+- Obligations: `ObligationAgreement`, `ObligationSchedule` from `app.data.obligations.models`
+- Rule evaluations: `evaluate_rules(db, user_id, forecast)` (already imported)
+- Scenario impact: `calculate_13_week_forecast(db, user_id, scenario_context=ScenarioContext(...))` with `excluded_client_ids`
+
+**Confidence layering** — two levels of behavioral confidence override:
+- **Layer 1** (engine-level, deferred): Downgrade in `engine_v2.py._compute_client_events()` based on `payment_behavior` + `avg_payment_delay_days`
+- **Layer 2** (tool-level, implemented): Query `ObligationSchedule.status == "overdue"` at tool execution time, reclassify HIGH → MEDIUM for specific clients. Stricter than Layer 1 because it uses real-time overdue state. Used in `_compute_payroll_coverage()`.
+
+**Message generation** — each tool builds a human-readable `message` field in its return dict. This gives Claude a starting point for its natural language response. Keep messages factual and precise — no exclamation marks, no "Great news!".
+
+### Intent wiring
+
+For each new operational tool, update `intent.py`:
+1. Add enum value to `Intent` class (e.g., `CHECK_PAYROLL = "check_payroll"`)
+2. Add 2-4 regex patterns to `INTENT_PATTERNS` with appropriate priorities (70-90 range)
+3. Add to `get_intent_description()` dict
+4. Add to `get_relevant_knowledge_keys()` with relevant glossary terms
+5. Add to `complex_intents` in `should_use_fast_model()` — all operational tools need tool calling, so they need the full model
+
+In `orchestrator.py`, add the new intent to `_intent_to_mode()` mapping → `"explain_forecast"` mode.
 
 ## Frontend conventions
 
@@ -205,9 +245,16 @@ class TestFeatureName:
 
 **Use the AgencyCo seed data** (`app/seed/agencyco.py`) for realistic test scenarios. It provides: 15 clients with varied payment behaviors, $487K across 3 accounts, bi-weekly $85K payroll, overdue invoices, and multiple detection triggers.
 
+**Operational tool tests** live in `tests/tami/test_operational_tools.py`. Established patterns:
+- **Mock helpers** — `_make_payroll_bucket()`, `_make_forecast_week()`, `_make_forecast()` build realistic mock data. Add similar helpers for new tools (e.g., `_make_client()` for concentration risk).
+- **DB mock via `_setup_db_mock()`** — tracks query execution order and returns appropriate results per query. When a tool makes N sequential DB queries, the mock returns different data for each call based on call count. Extend this pattern for new tools that query different tables.
+- **Forecast mocking** — patch `app.tami.tools.calculate_13_week_forecast` to return `_make_forecast(weeks)`. This avoids hitting the real forecast engine in unit tests.
+- **Dispatch routing test** — every new tool gets a test confirming `dispatch_tool(db, user_id, "tool_name", {})` doesn't return `{"error": "Unknown tool: ..."}`.
+- **All tool return values must be JSON-serializable** — test with `json.dumps(result)` to catch Decimal, date, or ORM objects leaking into the output.
+
 ## What NOT to do
 
-- **Don't add tools that overlap with the existing 5 scenario tools** — scenario operations (create, iterate, discard, suggest, goal-plan) are a closed set managed through the scenario engine. If you need new capabilities, extend the engine, don't add a parallel tool.
+- **Don't add more scenario tools** — the 5 scenario operations (create, iterate, discard, suggest, goal-plan) are a closed set managed through the scenario engine. New analytical capabilities should be operational tools (read-only). New scenario capabilities should extend the engine.
 - **Don't change the tool result format** without updating `agent2_responder.py`'s `generate_response()` conversion logic. Tool results must be JSON-serializable dicts with a `success` key.
 - **Don't hardcode dollar amounts or thresholds** — use the context payload. Thresholds come from `FinancialRule.threshold_config`. Cash values come from `build_context()`. The only constants should be structural (like `MAX_TOOL_LOOPS`).
 - **Don't make TAMI sound like a generic chatbot.** It should sound like a sharp CFO whispering in your ear, not a customer support bot. No "Great question!", no "I'd be happy to help!", no exclamation marks on financial data.
@@ -234,7 +281,19 @@ pytest tests/ -v
 # Database migrations
 cd tamio-backend
 alembic upgrade head
+
+# Test a TAMI tool against live backend (requires backend running + AgencyCo seeded)
+cd tamio-backend && bash scripts/test_tool.sh check_payroll_safety
+cd tamio-backend && bash scripts/test_tool.sh draft_collection_message
+# Or use the slash command: /test-tool check_payroll_safety
 ```
+
+## Test TAMI tool
+
+When asked to "test check_payroll_safety", "test draft_collection_message", "test analyze_concentration_risk", "test generate_briefing", or more generally "test <tool_name>":
+1. Run: `cd tamio-backend && bash scripts/test_tool.sh <tool_name>`
+2. Show the full output
+3. If the backend isn't running (connection refused), tell the user to start it first with `cd tamio-backend && uvicorn app.main:app --reload --port 8000`
 
 ## Restart dev servers
 
